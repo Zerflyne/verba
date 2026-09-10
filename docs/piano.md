@@ -16,14 +16,19 @@ precedente sia verificata.
 
 Fatte tutte e dieci le fasi, ognuna verificata prima della successiva.
 
-Due cose restano **scritte e non verificate**, ed e' giusto che si sappia
+Il guscio Tauri ora compila e si apre: la finestra 1600x980 esiste, la
+webview disegna l'interfaccia e il primo comando IPC (`informazioni`) e'
+arrivato fino a NVML e tornato indietro. Compilando davvero e' saltato fuori
+un errore che nessuna rilettura aveva visto — `FormatiDisponibili` e
+`FormatoTesto` derivavano `Deserialize` senza poterlo fare — ed e' corretto.
+
+Restano **due cose scritte e non verificate**, ed e' giusto che si sappia
 prima di leggere il resto:
 
-1. Il codice dell'applicazione e' scritto per intero — comandi Tauri e
-   interfaccia — e l'interfaccia e' stata percorsa tutta in un browser, ma
-   **la finestra non e' mai stata compilata su questa macchina**: mancano le
-   librerie di sistema (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
-   `libdbus-1-dev`), e installarle richiede i permessi di amministratore.
+1. Nessun file e' mai stato caricato *dalla finestra*. Il percorso completo
+   della spec — trascina, aspetta le fasi, guarda l'anteprima, esporta —
+   richiede un click, e da qui non si sintetizza (niente `xdotool`).
+   Il motore sotto e' pero' lo stesso gia' provato dalla riga di comando.
 
 2. I due workflow di CI non sono mai stati eseguiti: GitHub Actions non si
    prova da questa macchina. Il primo push su un tag e' anche il loro primo
@@ -93,10 +98,13 @@ Guscio 1600x980 fisso, barra laterale, quattro sezioni, barra di stato; ventotto
 comandi sopra `verba-core`; le tre stanze nell'ordine della spec. Lo stato di
 un lavoro aperto sta in `verba_core::sessione`, non nel guscio: e' quello che
 tiene l'anteprima sullo stesso codice dell'export.
-**Verificata a meta'**: l'interfaccia e' stata percorsa per intero in un
-browser (i quattro stati di Carica, il pannello di Modifica, l'elenco dei
-formati, le impostazioni); il guscio Tauri **non e' stato compilato** perche'
-mancano le librerie di sistema.
+**Verifica**: `cargo build -p verba-app` compila e linka; l'eseguibile apre
+una finestra X di 1600x980 intitolata Verba, la webview disegna la sezione
+Carica e chiama `informazioni`, che risponde con GPU, provider ONNX e
+cartelle. L'interfaccia era gia' stata percorsa per intero in un browser (i
+quattro stati di Carica, il pannello di Modifica, l'elenco dei formati, le
+impostazioni). **Non verificato**: caricare un file dalla finestra, che
+richiede un click che da qui non si puo' dare.
 
 ### ✅ Fase 9 — Repository e distribuzione
 README con lo screenshot in testa e i limiti noti in alto, LICENSE (MIT),
@@ -109,18 +117,30 @@ si prova da qui.
 
 ## Come rimettere in piedi le due verifiche mancanti
 
+Su una macchina dove le librerie non ci sono ancora:
+
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
                  libayatana-appindicator3-dev librsvg2-dev \
                  libdbus-1-dev patchelf
-npm install --prefix ui
-cargo build -p verba-app --release
 ```
 
-Poi `cargo tauri dev --config crates/verba-app/tauri.conf.json` apre la
-finestra vera, con il motore dietro invece del banco di prova. Il percorso da
-provare e' quello della spec: trascinare un file, aspettare le fasi, guardare
-l'anteprima, cambiare qualcosa in Modifica, esportare.
+Poi, per aprire la finestra collegata al motore:
+
+```bash
+npm install --prefix ui
+npm run dev --prefix ui &
+cargo build -p verba-app && ./target/debug/verba-app
+```
+
+Il binario di debug carica l'interfaccia da `http://localhost:5173`: senza il
+server di sviluppo acceso mostra soltanto *Connection refused*. Un binario di
+`--release` incorpora invece `ui/dist` e non ha bisogno di niente.
+`cargo tauri` non e' un sottocomando di cargo: e' un binario a parte
+(`cargo install tauri-cli --version '^2'`) e serve solo per impacchettare.
+
+Il percorso da provare e' quello della spec: trascinare un file, aspettare le
+fasi, guardare l'anteprima, cambiare qualcosa in Modifica, esportare.
 
 Per i workflow basta il primo push: `verifica.yml` parte su qualsiasi commit,
 `rilascio.yml` su un tag `v0.1.0`.

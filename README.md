@@ -519,11 +519,16 @@ cargo tauri dev --config crates/verba-app/tauri.conf.json      # sviluppo
 cargo tauri build --config crates/verba-app/tauri.conf.json    # .deb, .AppImage
 ```
 
-Per compilare il solo binario, senza pacchetti:
+Per compilare il solo binario, senza pacchetti e senza `tauri-cli`:
 
 ```bash
 npm run build --prefix ui && cargo build -p verba-app --release
 ```
+
+Il binario di `--release` incorpora `ui/dist` e si avvia da solo. Quello di
+debug, invece, carica l'interfaccia da `http://localhost:5173`: va acceso
+prima `npm run dev --prefix ui`, altrimenti la finestra si apre su
+*Connection refused*.
 
 **L'interfaccia da sola**, senza il motore, si guarda in un browser:
 
