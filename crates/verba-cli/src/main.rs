@@ -33,7 +33,8 @@ use tracing_subscriber::EnvFilter;
 use verba_core::audio::{AudioInput, NormalizeMode, PreprocessConfig};
 use verba_core::caratteri::{self, Catalogo, Richiesta};
 use verba_core::eventi::Fase;
-use verba_core::layout::{Allineamento, Attivazione, Formato, LayoutConfig, Tipografo};
+use verba_core::layout::{Allineamento, Attivazione, LayoutConfig, Tipografo};
+use verba_core::media::{Informazioni, Media};
 use verba_core::pipeline::{self, ConfigTrascrizione, PercorsiModelli};
 use verba_core::progetto::{self, FormatoPreset, Preset};
 use verba_core::prompt::{self, PromptConfig};
@@ -209,8 +210,9 @@ struct Cli {
     no_segmentation: bool,
 
     // ---- formato del video ----
-    /// Proporzioni del fotogramma.
-    #[arg(long, value_enum, default_value_t = FormatoArg::Verticale)]
+    /// Proporzioni del fotogramma. Con un file video il predefinito e'
+    /// `dal-sorgente`; con un file audio, che non ha proporzioni, e' `9:16`.
+    #[arg(long, value_enum, default_value_t = FormatoArg::DalSorgente)]
     formato: FormatoArg,
 
     /// Risoluzione esplicita `LARGHEZZAxALTEZZA` (sovrascrive --formato).
@@ -436,6 +438,9 @@ enum FormatoArg {
     /// 16:9 orizzontale, 1920x1080.
     #[value(name = "16:9", alias = "orizzontale")]
     Orizzontale,
+    /// Le proporzioni del file di partenza, se e' un video.
+    #[value(name = "dal-sorgente")]
+    DalSorgente,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -563,13 +568,36 @@ fn main() -> Result<()> {
 
     // Le impostazioni grafiche vengono validate subito: un colore scritto male
     // non deve emergere dopo mezz'ora di trascrizione.
+    // Come e' fatto il file: e' cio' che decide se ci sono proporzioni da
+    // rispettare, e se c'e' una traccia audio da trascrivere.
+    let sorgente = apri_sorgente(&cli)?;
+    if let Some(info) = &sorgente {
+        info!(
+            file = %cli.input[0],
+            modalita = ?info.modalita,
+            descrizione = %info.descrizione(),
+            "file di partenza"
+        );
+    }
+    let risoluzione_sorgente = sorgente.as_ref().and_then(|i| i.risoluzione());
+
     let base = preset_di_partenza(&cli)?;
     if let Some(b) = &base {
         info!(preset = %b.nome, "aspetto caricato da preset");
     }
-    let layout_cfg = configura_layout(&cli, &date, base.as_ref())?;
+    let layout_cfg = configura_layout(&cli, &date, base.as_ref(), risoluzione_sorgente)?;
     let stile = configura_stile(&cli, &date, base.as_ref())?;
-    let (fps_num, fps_den) = analizza_fps(&cli.fps)?;
+    // Con un video il frame rate e la durata vengono dal file, se non sono
+    // stati chiesti a mano: un overlay con un frame rate diverso da quello del
+    // filmato si sfalsa a poco a poco.
+    let (fps_num, fps_den) = if date.ha("fps") {
+        analizza_fps(&cli.fps)?
+    } else {
+        match sorgente.as_ref().filter(|i| i.e_video() && i.fps_num > 0) {
+            Some(i) => (i.fps_num, i.fps_den.max(1)),
+            None => analizza_fps(&cli.fps)?,
+        }
+    };
 
     // ---------------------------------------------------------------- fase 0
     // Pre-elaborazione audio: tutto in RAM, nessun file temporaneo.
@@ -850,6 +878,22 @@ fn descrivi_preset(p: &Preset) -> String {
     )
 }
 
+/// Legge le caratteristiche del file di partenza.
+///
+/// Ritorna `None` per stdin e per gli ingressi multipli: li' non c'e' un file
+/// solo di cui parlare, e la pre-elaborazione audio se la cava lo stesso.
+fn apri_sorgente(cli: &Cli) -> Result<Option<Informazioni>> {
+    if cli.input.len() != 1 || cli.input[0] == "-" {
+        return Ok(None);
+    }
+    let percorso = std::path::Path::new(&cli.input[0]);
+    if !percorso.is_file() {
+        return Ok(None);
+    }
+    let media = Media::apri(percorso)?;
+    Ok(Some(media.informazioni().clone()))
+}
+
 /// Il preset di partenza, se ne e' stato chiesto uno.
 fn preset_di_partenza(cli: &Cli) -> Result<Option<Preset>> {
     if let Some(percorso) = &cli.preset {
@@ -858,19 +902,29 @@ fn preset_di_partenza(cli: &Cli) -> Result<Option<Preset>> {
     Ok(cli.preset_di_serie.map(PresetArg::preset))
 }
 
-fn configura_layout(cli: &Cli, date: &DateAMano, base: Option<&Preset>) -> Result<LayoutConfig> {
-    // Il formato: quello scritto a mano vince, poi quello del preset, poi il
-    // predefinito.
+fn configura_layout(
+    cli: &Cli,
+    date: &DateAMano,
+    base: Option<&Preset>,
+    sorgente: Option<(u32, u32)>,
+) -> Result<LayoutConfig> {
+    // Il formato: la risoluzione esplicita vince su tutto, poi il formato
+    // scritto a mano, poi quello del preset, poi il predefinito.
     let (larghezza, altezza) = match (&cli.risoluzione, base) {
         (Some(s), _) => analizza_risoluzione(s)?,
-        // Il formato scritto a mano vince sul preset.
-        (None, Some(b)) if !date.ha("formato") => b.posizione.formato.risoluzione(None),
+        (None, Some(b)) if !date.ha("formato") => b.posizione.formato.risoluzione(sorgente),
         _ => match cli.formato {
-            FormatoArg::Verticale => Formato::Verticale,
-            FormatoArg::Orizzontale => Formato::Orizzontale,
+            FormatoArg::Verticale => FormatoPreset::Verticale,
+            FormatoArg::Orizzontale => FormatoPreset::Orizzontale,
+            FormatoArg::DalSorgente => FormatoPreset::DalSorgente,
         }
-        .risoluzione(),
+        .risoluzione(sorgente),
     };
+    if larghezza % 2 != 0 || altezza % 2 != 0 {
+        bail!(
+            "risoluzione {larghezza}x{altezza}: gli encoder vogliono dimensioni pari.              Indicane una con --risoluzione."
+        );
+    }
 
     let d = base.map(|b| b.layout(Some((larghezza, altezza)))).unwrap_or_default();
 

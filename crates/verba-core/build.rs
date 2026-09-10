@@ -16,11 +16,18 @@ const LIBRERIE: [&str; 3] = ["libavcodec", "libavformat", "libavutil"];
 fn main() {
     println!("cargo:rerun-if-changed=cpp/encoder.cpp");
     println!("cargo:rerun-if-changed=cpp/encoder.h");
+    println!("cargo:rerun-if-changed=cpp/media.cpp");
+    println!("cargo:rerun-if-changed=cpp/media.h");
     println!("cargo:rerun-if-env-changed=FFMPEG_INCLUDE_DIR");
     println!("cargo:rerun-if-env-changed=FFMPEG_LIB_DIR");
 
     let mut build = cc::Build::new();
-    build.cpp(true).std("c++17").file("cpp/encoder.cpp").warnings(true);
+    build
+        .cpp(true)
+        .std("c++17")
+        .file("cpp/encoder.cpp")
+        .file("cpp/media.cpp")
+        .warnings(true);
 
     let include_manuale = env::var_os("FFMPEG_INCLUDE_DIR").map(PathBuf::from);
     let lib_manuale = env::var_os("FFMPEG_LIB_DIR").map(PathBuf::from);

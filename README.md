@@ -29,6 +29,7 @@ prima e dopo lo scarico.
 crates/
   verba-core/            libreria: tutta la logica, nessuna dipendenza da UI
     src/
+      media.rs           cosa contiene il file, e il fotogramma a un dato istante
       audio.rs           pre-elaborazione: multi-formato -> mono -> 16 kHz -> normalizzazione (0 file temporanei)
       segmentation.rs    pyannote ONNX: finestre da 10 s, powerset/multi-label, isteresi
       transcribe.rs      Whisper large-v3 via whisper.cpp; release() libera la VRAM
@@ -44,6 +45,7 @@ crates/
       onnx.rs            sessioni ORT condivise, softmax / log-softmax
     cpp/
       encoder.h/.cpp     ProRes 4444 con alfa su libavcodec + libavformat
+      media.h/.cpp       lettura del file di partenza e decodifica dei fotogrammi
     assets/
       Inter-Bold.ttf     Inter statico peso 700, incorporato nel binario
   verba-cli/             binario `verba`: orchestrazione a fasi e riga di comando
@@ -79,6 +81,45 @@ Verificabile senza modelli:
 ```bash
 cargo run --release -- prova.mp3 --solo-audio -v
 ```
+
+### Audio o video
+
+Verba si comporta in modo diverso a seconda di cosa gli si da', e la differenza
+nasce in `media.rs`.
+
+Con un **file audio** (`.mp3`, `.wav`, `.m4a`, `.flac`, `.ogg`, `.opus`) non c'e'
+niente da disegnare sotto i sottotitoli: senza proporzioni da rispettare il
+formato ricade sul 9:16, che e' dove i sottotitoli generati finiscono piu'
+spesso.
+
+Con un **file video** (`.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`) le proporzioni,
+la durata e **il frame rate** vengono dal file. Quest'ultimo conta: un overlay a
+30 fps sopra un filmato a 23,976 si sfalsa di qualche fotogramma al minuto, e il
+difetto si nota solo dopo, a montaggio fatto.
+
+Un file senza traccia audio non e' un caso da gestire alla meglio, e' un errore
+con un messaggio suo:
+
+```
+Error: muto.mp4: il file non contiene audio. Serve un file con una traccia audio.
+```
+
+Le copertine incorporate nei file audio sono tracce video a tutti gli effetti:
+se non venissero riconosciute come tali, un MP3 con la copertina dell'album
+passerebbe per un filmato di un fotogramma.
+
+**La conversione dei pixel e' scritta a mano** invece di passare da libswscale,
+per la stessa ragione per cui l'encoder non la usa nell'altra direzione: e' una
+dipendenza di sistema in meno. Sono gestiti i formati che escono davvero da un
+decoder video (`yuv420p`, `yuv422p`, `yuv444p`, le varianti J e a 10 e 12 bit,
+`nv12`, `nv21`); per qualsiasi altro c'e' un errore che ne dice il nome. Le
+matrici sono BT.601, BT.709 e BT.2020, e quando il file **non dichiara** lo
+spazio colore si applica la convenzione dei riproduttori: BT.601 fino alla
+definizione standard, BT.709 sopra. Sbagliare qui non produce un errore ma
+colori spenti, che e' peggio perche' sembra un difetto del disegno.
+
+Verificato a confronto con ffmpeg: su un file con BT.709 dichiarato lo scarto
+massimo e' 3 su 255, cioe' l'arrotondamento.
 
 ### Dai tempi delle parole al fotogramma
 
@@ -576,9 +617,9 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 | Opzione | Default | Descrizione |
 |---|---|---|
 | `-o`, `--output` | `<input>.mov` | file MOV ProRes 4444 di uscita |
-| `--formato 9:16\|16:9` | `9:16` | proporzioni del fotogramma |
+| `--formato 9:16\|16:9\|dal-sorgente` | `dal-sorgente` | proporzioni del fotogramma |
 | `--risoluzione LxA` | dal formato | risoluzione esplicita, dimensioni pari |
-| `--fps` | `30` | intero, decimale o frazione (`30000/1001`) |
+| `--fps` | dal sorgente, o `30` | intero, decimale o frazione (`30000/1001`) |
 | `--durata` | durata audio | durata del video in secondi |
 | `--qualita` | `4` | quantizzatore ProRes: piu' basso, piu' qualita' |
 
