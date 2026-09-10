@@ -37,6 +37,7 @@ pub mod pipeline;
 pub mod prompt;
 pub mod pulizia;
 pub mod render;
+pub mod scena;
 pub mod segmentation;
 pub mod srt;
 pub mod transcribe;

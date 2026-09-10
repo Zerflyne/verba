@@ -17,8 +17,7 @@ use tracing::debug;
 
 use crate::encoder::{Encoder, EncoderConfig};
 use crate::eventi::{Annullato, Evento, Fase, Progresso};
-use crate::layout::{Blocco, LayoutConfig};
-use crate::render::{Rasterizzatore, Tela};
+use crate::scena::{Scena, Stato};
 
 #[derive(Debug, Clone)]
 pub struct VideoConfig {
@@ -51,20 +50,14 @@ pub struct Statistiche {
     pub secondi: f64,
 }
 
-/// Stato visibile in un dato istante: quale riga, e quale parola vi e' indicata
-/// dal rettangolo (`None` quando non ce n'e' nessuna: la riga resta, il
-/// rettangolo no).
-type Stato = Option<(usize, Option<usize>)>;
-
 /// Rende i sottotitoli e scrive il file video.
 pub fn esporta(
-    blocchi: &[Blocco],
-    rasterizzatore: &mut Rasterizzatore,
-    cfg: &LayoutConfig,
+    scena: &mut Scena,
     vcfg: &VideoConfig,
     percorso: &Path,
     progresso: &Progresso,
 ) -> Result<Statistiche> {
+    let cfg = scena.configurazione().clone();
     if vcfg.fps_num == 0 || vcfg.fps_den == 0 {
         bail!("frame rate non valido: {}/{}", vcfg.fps_num, vcfg.fps_den);
     }
@@ -74,7 +67,7 @@ pub fn esporta(
 
     let fps = vcfg.fps();
     let totale = (vcfg.durata * fps).ceil().max(1.0) as u64;
-    let stati = calcola_stati(blocchi, totale, vcfg);
+    let stati = calcola_stati(scena, totale, vcfg);
 
     let mut encoder = Encoder::apri(
         percorso,
@@ -88,10 +81,8 @@ pub fn esporta(
         },
     )?;
 
-    let mut tela = Tela::nuova(cfg.larghezza, cfg.altezza);
-    let mut blocco_preparato: Option<usize> = None;
-    let mut disegnati = 0u64;
     let inizio = Instant::now();
+    let disegni_iniziali = scena.disegni();
 
     let mut fermato = false;
     let mut i = 0usize;
@@ -104,18 +95,10 @@ pub fn esporta(
         }
         let ripetizioni = (j - i) as u32;
 
-        match stato {
-            None => tela.pulisci(),
-            Some((b, parola)) => {
-                if blocco_preparato != Some(b) {
-                    rasterizzatore.prepara(&blocchi[b]);
-                    blocco_preparato = Some(b);
-                }
-                rasterizzatore.componi(parola, &mut tela);
-            }
-        }
-        disegnati += 1;
-        encoder.scrivi(tela.pixel(), ripetizioni)?;
+        // Il fotogramma esce dalla stessa funzione che alimenta l'anteprima:
+        // e' l'unico modo perche' le due non divergano.
+        let pixel = scena.disegna(stato);
+        encoder.scrivi(pixel, ripetizioni)?;
 
         progresso.passo(Fase::Codifica, j as f32 / stati.len() as f32);
 
@@ -139,40 +122,36 @@ pub fn esporta(
     let fotogrammi = encoder.frame_scritti() as u64;
     encoder.chiudi()?;
     let secondi = inizio.elapsed().as_secs_f64();
+    let disegnati = scena.disegni() - disegni_iniziali;
     debug!(fotogrammi, disegnati, "codifica conclusa");
 
-    Ok(Statistiche { fotogrammi, fotogrammi_disegnati: disegnati, blocchi: blocchi.len(), secondi })
+    Ok(Statistiche {
+        fotogrammi,
+        fotogrammi_disegnati: disegnati,
+        blocchi: scena.blocchi().len(),
+        secondi,
+    })
 }
 
-/// Per ogni fotogramma, quale riga e' visibile e quale parola e' indicata.
+/// Per ogni fotogramma, cosa e' visibile.
 ///
 /// Il tempo campionato e' il **centro** del fotogramma: un sottotitolo che
-/// compare a meta' fotogramma viene mostrato dal fotogramma che lo contiene
-/// per piu' della meta' della sua durata, che e' il comportamento atteso.
-fn calcola_stati(blocchi: &[Blocco], totale: u64, vcfg: &VideoConfig) -> Vec<Stato> {
+/// compare a meta' fotogramma viene mostrato dal fotogramma che lo contiene per
+/// piu' della meta' della sua durata, che e' il comportamento atteso.
+///
+/// Lo stato lo decide la scena, la stessa che risponde all'anteprima: qui non
+/// c'e' una seconda implementazione da tenere allineata.
+fn calcola_stati(scena: &mut Scena, totale: u64, vcfg: &VideoConfig) -> Vec<Stato> {
     let passo = vcfg.fps_den.max(1) as f64 / vcfg.fps_num as f64;
-    let mut stati = Vec::with_capacity(totale as usize);
-    let mut cursore = 0usize;
-
-    for f in 0..totale {
-        let t = (f as f64 + 0.5) * passo;
-        while cursore < blocchi.len() && blocchi[cursore].end <= t {
-            cursore += 1;
-        }
-        let stato = match blocchi.get(cursore) {
-            Some(b) if t >= b.start => Some((cursore, b.parola_attiva(t))),
-            _ => None,
-        };
-        stati.push(stato);
-    }
-    stati
+    (0..totale).map(|f| scena.stato((f as f64 + 0.5) * passo)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::{impagina, Attivazione, Blocco, Formato, LayoutConfig, Tipografo};
+    use crate::render::{Rasterizzatore, Stile};
     use crate::trascrizione::Parola;
-    use crate::layout::{impagina, Attivazione, Formato, Tipografo};
 
     const FONT: &[u8] = include_bytes!("../assets/Inter-Bold.ttf");
 
@@ -190,9 +169,8 @@ mod tests {
     fn prima_del_primo_blocco_lo_schermo_e_vuoto() {
         let (larghezza, altezza) = Formato::Verticale.risoluzione();
         let cfg = LayoutConfig { larghezza, altezza, dimensione_font: Some(72.0), ..Default::default() };
-        let blocchi = blocchi_di_prova(&cfg);
         let vcfg = VideoConfig { durata: 5.0, ..Default::default() };
-        let stati = calcola_stati(&blocchi, 150, &vcfg);
+        let stati = calcola_stati(&mut scena(&cfg), 150, &vcfg);
         assert_eq!(stati[0], None, "a 0,0167 s non c'e' ancora parlato");
         assert!(stati.iter().any(|s| s.is_some()), "nessun fotogramma con sottotitolo");
     }
@@ -201,9 +179,8 @@ mod tests {
     fn la_parola_indicata_avanza_nel_tempo() {
         let (larghezza, altezza) = Formato::Verticale.risoluzione();
         let cfg = LayoutConfig { larghezza, altezza, dimensione_font: Some(72.0), ..Default::default() };
-        let blocchi = blocchi_di_prova(&cfg);
         let vcfg = VideoConfig { durata: 5.0, ..Default::default() };
-        let stati = calcola_stati(&blocchi, 150, &vcfg);
+        let stati = calcola_stati(&mut scena(&cfg), 150, &vcfg);
         let sequenza: Vec<usize> = stati.iter().flatten().filter_map(|(_, p)| *p).collect();
         assert!(sequenza.windows(2).all(|c| c[1] >= c[0]), "la parola indicata torna indietro");
         assert!(sequenza.contains(&0) && sequenza.iter().any(|&p| p > 0));
@@ -226,17 +203,19 @@ mod tests {
             Parola::nuova("beta", 2.0, 2.4),
         ];
         let blocchi = impagina(&parole, &mut t, &cfg).unwrap();
+        let mut s = Scena::nuova(blocchi, Rasterizzatore::nuovo(t, cfg.clone(), Stile::default()));
         let vcfg = VideoConfig { durata: 3.0, ..Default::default() };
-        let stati = calcola_stati(&blocchi, 90, &vcfg);
+        let stati = calcola_stati(&mut s, 90, &vcfg);
         // a 1,0 s (fotogramma 30) la riga c'e', ma nessuna parola e' indicata
         assert_eq!(stati[30], Some((0, None)), "{:?}", stati[30]);
         assert_eq!(stati[0].map(|(_, p)| p), Some(Some(0)));
     }
 
-    /// Un rasterizzatore pronto sui blocchi dati, per le prove di scrittura.
-    fn rasterizzatore(cfg: &LayoutConfig) -> Rasterizzatore {
+    /// Una scena pronta sui blocchi di prova, per le prove di scrittura.
+    fn scena(cfg: &LayoutConfig) -> Scena {
+        let blocchi = blocchi_di_prova(cfg);
         let t = Tipografo::nuovo(FONT, cfg.corpo(), cfg.interlinea).unwrap();
-        Rasterizzatore::nuovo(t, cfg.clone(), crate::render::Stile::default())
+        Scena::nuova(blocchi, Rasterizzatore::nuovo(t, cfg.clone(), Stile::default()))
     }
 
     fn percorso_di_prova(nome: &str) -> std::path::PathBuf {
@@ -253,20 +232,12 @@ mod tests {
             dimensione_font: Some(24.0),
             ..Default::default()
         };
-        let blocchi = blocchi_di_prova(&cfg);
         let vcfg = VideoConfig { fps_num: 25, fps_den: 1, durata: 2.0, ..Default::default() };
         let percorso = percorso_di_prova("esporta");
         let _ = std::fs::remove_file(&percorso);
 
-        let stat = esporta(
-            &blocchi,
-            &mut rasterizzatore(&cfg),
-            &cfg,
-            &vcfg,
-            &percorso,
-            &Progresso::silenzioso(),
-        )
-        .unwrap();
+        let stat =
+            esporta(&mut scena(&cfg), &vcfg, &percorso, &Progresso::silenzioso()).unwrap();
 
         assert_eq!(stat.fotogrammi, 50, "2 s a 25 fps");
         assert!(stat.fotogrammi_disegnati < stat.fotogrammi, "ridisegnati tutti i fotogrammi");
@@ -283,7 +254,6 @@ mod tests {
             dimensione_font: Some(24.0),
             ..Default::default()
         };
-        let blocchi = blocchi_di_prova(&cfg);
         let vcfg = VideoConfig { fps_num: 25, fps_den: 1, durata: 60.0, ..Default::default() };
         let percorso = percorso_di_prova("annullata");
         let _ = std::fs::remove_file(&percorso);
@@ -291,7 +261,7 @@ mod tests {
         let progresso = Progresso::silenzioso();
         progresso.interruttore().annulla();
 
-        let esito = esporta(&blocchi, &mut rasterizzatore(&cfg), &cfg, &vcfg, &percorso, &progresso);
+        let esito = esporta(&mut scena(&cfg), &vcfg, &percorso, &progresso);
 
         let errore = esito.expect_err("la codifica doveva fermarsi");
         assert!(
@@ -299,6 +269,44 @@ mod tests {
             "annullare non e' un errore qualsiasi: {errore}"
         );
         assert!(!percorso.exists(), "il file parziale e' rimasto: {}", percorso.display());
+    }
+
+    #[test]
+    fn l_export_disegna_gli_stessi_fotogrammi_dell_anteprima() {
+        // E' l'invariante che tiene insieme le due strade: l'anteprima chiede
+        // un tempo, l'export raggruppa i fotogrammi per stato, ma lo stato lo
+        // decide la stessa funzione. Se qualcuno reintroducesse un secondo
+        // percorso, qui si vedrebbe.
+        let cfg = LayoutConfig {
+            larghezza: 320,
+            altezza: 240,
+            dimensione_font: Some(24.0),
+            ..Default::default()
+        };
+        let vcfg = VideoConfig { fps_num: 25, fps_den: 1, durata: 4.0, ..Default::default() };
+        let totale = (vcfg.durata * vcfg.fps()).ceil() as u64;
+
+        let mut per_export = scena(&cfg);
+        let stati = calcola_stati(&mut per_export, totale, &vcfg);
+
+        let mut per_anteprima = scena(&cfg);
+        let passo = vcfg.fps_den as f64 / vcfg.fps_num as f64;
+        for (f, atteso) in stati.iter().enumerate() {
+            let t = (f as f64 + 0.5) * passo;
+            assert_eq!(
+                per_anteprima.stato(t),
+                *atteso,
+                "fotogramma {f} (t = {t:.3} s): anteprima ed export non concordano"
+            );
+        }
+
+        // E i pixel: gli stessi stati devono dare gli stessi pixel.
+        let mut a = scena(&cfg);
+        let mut b = scena(&cfg);
+        for (f, stato) in stati.iter().enumerate().step_by(7) {
+            let t = (f as f64 + 0.5) * passo;
+            assert_eq!(a.disegna(*stato), b.fotogramma(t), "fotogramma {f}: pixel diversi");
+        }
     }
 
     #[test]

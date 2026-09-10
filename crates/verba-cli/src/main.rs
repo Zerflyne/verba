@@ -37,6 +37,7 @@ use verba_core::layout::{Allineamento, Attivazione, Formato, LayoutConfig, Tipog
 use verba_core::pipeline::{self, ConfigTrascrizione, PercorsiModelli};
 use verba_core::prompt::{self, PromptConfig};
 use verba_core::render::{Colore, Evidenziazione, Rasterizzatore, Stile};
+use verba_core::scena::Scena;
 use verba_core::segmentation::SegmentationConfig;
 use verba_core::srt::{SrtConfig, SrtMode};
 use verba_core::transcribe::WhisperConfig;
@@ -619,10 +620,11 @@ fn main() -> Result<()> {
         durata = format!("{:.2} s", vcfg.durata),
         "codifica del video dei sottotitoli"
     );
-    let mut rasterizzatore = Rasterizzatore::nuovo(tipografo, layout_cfg.clone(), stile);
+    let rasterizzatore = Rasterizzatore::nuovo(tipografo, layout_cfg.clone(), stile);
+    let mut scena = Scena::nuova(blocchi, rasterizzatore);
     let stat = {
         let _c = progresso.inizia(Fase::Codifica);
-        video::esporta(&blocchi, &mut rasterizzatore, &layout_cfg, &vcfg, &out_path, &progresso)?
+        video::esporta(&mut scena, &vcfg, &out_path, &progresso)?
     };
     info!(
         file = %out_path.display(),
@@ -636,7 +638,7 @@ fn main() -> Result<()> {
     // Uscite accessorie, solo se richieste esplicitamente.
     if let Some(srt_path) = &cli.srt {
         let cues = match cli.srt_mode {
-            SrtModeArg::Blocchi => srt::cues_da_blocchi(&blocchi),
+            SrtModeArg::Blocchi => srt::cues_da_blocchi(scena.blocchi()),
             altro => {
                 let srt_cfg = SrtConfig {
                     mode: match altro {
