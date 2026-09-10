@@ -26,6 +26,12 @@ use crate::pulizia::{self, DURATA_MINIMA_PAROLA};
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct IdParola(u64);
 
+impl From<IdParola> for u64 {
+    fn from(id: IdParola) -> u64 {
+        id.0
+    }
+}
+
 impl IdParola {
     /// Valore grezzo, per le chiavi delle mappe dell'interfaccia.
     pub fn valore(self) -> u64 {

@@ -2,19 +2,10 @@
 /models
 /ui/node_modules
 /ui/dist
+/crates/verba-app/gen
+*.parziale
 
-# uscite di prova
-*.srt
-*.vtt
-*.mov
-*.mp4
-*.webm
-*.json.out
-anteprima*.mp4
-
-# file di lavoro
-*.bak
-
-# campioni audio locali, non versionati
-/prova.mp3
-/prova2.wav
+# I file di prova dell'autore: audio e video di partenza restano fuori.
+/prova*.mp3
+/prova*.wav
+/prova*.mp4

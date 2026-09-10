@@ -1,18 +1,35 @@
 # Verba — sottotitoli automatici in locale
 
-Trascrizione audio con **mappatura testuale parola per parola** e **sottotitoli
-grafici su sfondo trasparente**, pronti da sovrapporre a un video nel montaggio.
+Prende un file audio o video, lo trascrive con i tempi **parola per parola**, e
+ne esporta i sottotitoli: come file di testo, come video con i sottotitoli
+impressi, o come overlay su sfondo trasparente da montare altrove.
+
+**Gira interamente sulla tua macchina.** Nessun file lasciato su un server,
+nessun abbonamento, nessun limite di minuti. E' il motivo per cui esiste.
 
 | Fase | Modello | Runtime |
 |---|---|---|
 | Pre-elaborazione | — | Symphonia + rubato, tutto in RAM |
 | Segmentazione | `pyannote/segmentation-3.0` | ONNX Runtime |
-| Trascrizione | `whisper-large-v3` | whisper.cpp (GGML) |
+| Trascrizione | `whisper` large-v3 / medium / small | whisper.cpp (GGML) |
 | Allineamento | `wav2vec2` italiano (CTC) | ONNX Runtime |
-| Impaginazione | — | cosmic-text, font Inter 700, da una a tre righe |
-| Disegno | — | RGBA con alfa: testo + rettangolo di evidenziazione |
-| Codifica | — | libavcodec/libavformat (C++), `prores_ks` 4444 |
-| Uscita | — | MOV ProRes 4444 con canale alfa (+ SRT e JSON opzionali) |
+| Impaginazione | — | cosmic-text, da una a tre righe |
+| Disegno | — | RGBA con alfa: testo + evidenziazione della parola in corso |
+| Codifica | — | libavcodec/libavformat (C++) |
+| Uscita | — | `.mp4` `.mov` `.webm` `.srt` `.vtt` `.json` `.txt` |
+
+## Limiti noti, subito
+
+* **Senza GPU funziona lo stesso**, ma large-v3 su CPU e' lento: conta minuti,
+  non secondi, per ogni minuto di audio. Con `--modello small` si scende di
+  quattro-cinque volte, perdendo qualche nome proprio.
+* **Il primo avvio scarica quasi 3 GB** di modelli. Non stanno dentro
+  l'eseguibile e non ci possono stare.
+* **L'allineatore va esportato a mano** una volta sola, con uno script Python:
+  di quel modello non esiste una versione ONNX pubblica di cui fidarsi.
+* L'italiano e' la lingua su cui e' stato messo a punto; le altre funzionano ma
+  l'allineatore predefinito e' italiano.
+* La finestra dell'applicazione e' **1600x980 fissa**, per scelta.
 
 La trascrizione **non passa da alcun file intermedio**: resta in RAM e alimenta
 direttamente l'impaginazione e il disegno dei fotogrammi.
@@ -39,25 +56,44 @@ crates/
       render.rs          disegno RGBA: maschere, contorno, rettangolo smussato
       encoder.rs         ponte FFI verso l'encoder C++
       video.rs           dalla linea temporale ai fotogrammi codificati
-      srt.rs             battute blocchi / word / line / karaoke, timestamp HH:MM:SS,mmm
+      srt.rs             battute blocchi / parola / riga / karaoke, timestamp HH:MM:SS,mmm
+      scena.rs           un solo percorso dal tempo al fotogramma: anteprima ed export
+      sessione.rs        lo stato di un lavoro aperto: file, parole, aspetto, anteprima
+      pipeline.rs        l'ordine delle fasi, uno solo per tutti i chiamanti
+      progetto.rs        preset in JSON e i tre di serie
+      impostazioni.rs    cosa ricorda la macchina fra un avvio e l'altro
+      modelli.rs         catalogo, scaricamento con ripresa, verifica SHA-256
+      cartelle.rs        dove vivono modelli e librerie, sistema per sistema
+      caratteri.rs       catalogo dei font, pesi, ricadute annunciate
+      eventi.rs          avanzamento per fasi, annullamento
       prompt.rs          initial prompt di Whisper da file CSV di termini
       gpu.rs             selezione GPU su VRAM totale, monitoraggio NVML
-      onnx.rs            sessioni ORT condivise, softmax / log-softmax
+      onnx.rs            libreria ORT, provider attivo, softmax / log-softmax
     cpp/
-      encoder.h/.cpp     ProRes 4444 con alfa su libavcodec + libavformat
+      encoder.h/.cpp     quattro formati di uscita su libavcodec + libavformat
       media.h/.cpp       lettura del file di partenza e decodifica dei fotogrammi
     assets/
       Inter-Bold.ttf     Inter statico peso 700, incorporato nel binario
-  verba-cli/             binario `verba`: orchestrazione a fasi e riga di comando
+  verba-cli/             binario `verba`: trascrivi, rendi, overlay, modelli, ...
+  verba-app/             applicazione Tauri v2: una finestra sopra verba-core
+ui/                      frontend React + Vite: quattro sezioni, banco di prova
 assets/
   fonts/                 caratteri aggiuntivi offerti nel selettore
 docs/
   piano.md               piano di costruzione della 0.1
+  spec.md                la specifica da cui nasce il progetto
 scripts/
   export_models.py       esporta pyannote e wav2vec2 in ONNX
+  scarica_caratteri.py   scarica e istanzia i caratteri di serie da Google Fonts
 esempi/
   vocabolario.csv        CSV di esempio per l'initial prompt
 ```
+
+`verba-core` non sa che esistono ne' la riga di comando ne' Tauri: espone la
+pipeline come funzioni piu' un canale di eventi. E' quello che permette a
+`verba-cli` e a `verba-app` di percorrere la stessa strada invece di
+orchestrare i modelli ognuno per conto suo — se lo facessero, divergerebbero su
+qualche dettaglio e il risultato cambierebbe a seconda di come lo hai chiesto.
 
 ### `verba-core/src/audio.rs` — pre-elaborazione (modulo separato, come richiesto)
 
@@ -429,8 +465,50 @@ sudo apt install libvulkan-dev glslc     # per --features vulkan
 ```
 
 whisper.cpp con Vulkan enumera i dispositivi per conto suo e non segue
-`--gpu-index`: se sceglie la scheda sbagliata, si forza con
+`--gpu`: se sceglie la scheda sbagliata, si forza con
 `GGML_VK_VISIBLE_DEVICES=0` davanti al comando.
+
+### L'applicazione
+
+`cargo build --release` compila **solo il motore e la riga di comando**.
+L'applicazione con la finestra non e' fra i membri predefiniti del workspace:
+tirarsi dietro GTK, WebKit e D-Bus per compilare una riga di comando sarebbe un
+pedaggio ingiustificato, e su una macchina senza quelle librerie `cargo build`
+fallirebbe anche a chi della finestra non sa che farsene.
+
+Su Debian e Ubuntu servono:
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
+                 libayatana-appindicator3-dev librsvg2-dev \
+                 libdbus-1-dev patchelf
+```
+
+Poi:
+
+```bash
+npm install --prefix ui
+cargo install tauri-cli --version "^2"    # una volta sola
+cargo tauri dev --config crates/verba-app/tauri.conf.json      # sviluppo
+cargo tauri build --config crates/verba-app/tauri.conf.json    # .deb, .AppImage
+```
+
+Per compilare il solo binario, senza pacchetti:
+
+```bash
+npm run build --prefix ui && cargo build -p verba-app --release
+```
+
+**L'interfaccia da sola**, senza il motore, si guarda in un browser:
+
+```bash
+npm run dev --prefix ui        # http://localhost:5173
+```
+
+Fuori da Tauri il ponte verso il motore risponde con dati finti
+(`ui/src/banco.ts`): nessun file viene letto o scritto, e la console lo dice a
+chiare lettere. Serve a lavorare sull'aspetto senza ricompilare il motore a
+ogni modifica del CSS, e a vedere la finestra su una macchina che non ha WebKit.
 
 ## Modelli
 

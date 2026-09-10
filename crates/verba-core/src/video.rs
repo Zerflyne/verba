@@ -255,7 +255,12 @@ fn scrivi_impresso(
 }
 
 /// Sovrappone i sottotitoli (RGBA ad alfa dritta) allo sfondo opaco.
-fn sovrapponi(sfondo: &mut [u8], sopra: &[u8]) {
+/// Compone `sopra` (RGBA, alfa dritta) su `sfondo`, in place.
+///
+/// E' la stessa funzione che usa l'export: l'anteprima dell'applicazione non
+/// ha un modo suo di sovrapporre i sottotitoli al filmato, altrimenti le due
+/// immagini finirebbero per non coincidere.
+pub fn sovrapponi(sfondo: &mut [u8], sopra: &[u8]) {
     for (giu, su) in sfondo.chunks_exact_mut(4).zip(sopra.chunks_exact(4)) {
         let a = su[3] as u32;
         if a == 0 {

@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/verba-core", "crates/verba-cli"]
+members = ["crates/verba-core", "crates/verba-cli", "crates/verba-app"]
+
+# `verba-app` non e' fra i membri predefiniti: tirarsi dietro GTK, WebKit e
+# D-Bus per compilare la riga di comando sarebbe un pedaggio ingiustificato, e
+# su una macchina senza quelle librerie `cargo build` fallirebbe anche a chi
+# della finestra non sa che farsene. L'applicazione si compila chiedendola:
+#
+#     cargo build -p verba-app --release
+default-members = ["crates/verba-core", "crates/verba-cli"]
 
 [workspace.package]
 version = "0.1.0"

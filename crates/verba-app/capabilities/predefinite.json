@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "predefinite",
+  "description": "I permessi che servono a Verba: aprire e salvare file, e aprire la cartella di un export. Niente rete, niente shell.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "opener:allow-reveal-item-in-dir"
+  ]
+}

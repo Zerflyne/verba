@@ -127,6 +127,16 @@ impl Interruttore {
     pub fn annullato(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
+
+    /// Rimette l'interruttore a riposo, prima di una nuova operazione.
+    ///
+    /// Serve a chi tiene lo stesso interruttore per tutta la vita del
+    /// programma — l'applicazione, dove il pulsante *Annulla* e' sempre lo
+    /// stesso: senza questo, dopo il primo annullamento nessuna operazione
+    /// partirebbe piu'.
+    pub fn riprendi(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 /// L'errore che la pipeline restituisce quando e' stata fermata.
@@ -176,6 +186,18 @@ impl Progresso {
     /// Gli eventi vanno alla funzione data, dal thread che li emette.
     pub fn con(f: impl Fn(Evento) + Send + Sync + 'static) -> Self {
         Self { ascoltatore: Some(Arc::new(f)), interruttore: Interruttore::nuovo() }
+    }
+
+    /// Come [`Self::con`], ma con un interruttore gia' esistente.
+    ///
+    /// L'applicazione ne tiene uno solo, quello del pulsante *Annulla*, e lo
+    /// consegna a ogni operazione: e' cosi' che il pulsante puo' fermare
+    /// qualunque cosa sia in corso senza doverne conoscere il tipo.
+    pub fn con_interruttore(
+        f: impl Fn(Evento) + Send + Sync + 'static,
+        interruttore: Interruttore,
+    ) -> Self {
+        Self { ascoltatore: Some(Arc::new(f)), interruttore }
     }
 
     /// Gli eventi vanno su un canale, da consumare altrove.

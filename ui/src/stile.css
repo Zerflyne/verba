@@ -1,0 +1,961 @@
+/* La palette e' quella della spec, e non si tocca.
+ *
+ * Il violetto marca UNA cosa alla volta: la voce di navigazione attiva, il
+ * riempimento dei cursori, il pulsante primario, la parola evidenziata
+ * nell'anteprima, il bordo delle parole segnalate. Ovunque altro, grigio. Se
+ * si togliesse il violetto, quello che resta deve sembrare un'applicazione
+ * finita in bianco e nero. */
+:root {
+  --bg: #121212;
+  --surface: #171717;
+  --surface2: #202020;
+  --border: #2a2a2a;
+  --text: #ededed;
+  --dim: #8c8c8c;
+  --accent: #a78bfa;
+  --strong: #8b5cf6;
+  --lilac: #c4b5fd;
+  --ok: #6fcf97;
+  --warn: #e0b25c;
+  --err: #e07a7a;
+  --accent-soft: rgba(167, 139, 250, 0.08);
+
+  --laterale: 220px;
+  --stato: 38px;
+  --raggio: 10px;
+  --raggio-grande: 14px;
+
+  color-scheme: dark;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/caratteri/Inter-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: block;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("/caratteri/Inter-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-display: block;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#radice {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  /* La finestra e' fissa: niente selezione accidentale trascinando. */
+  user-select: none;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+/* ------------------------------------------------------------- impianto */
+
+.finestra {
+  display: grid;
+  grid-template-columns: var(--laterale) 1fr;
+  grid-template-rows: 1fr var(--stato);
+  height: 100%;
+}
+
+.laterale {
+  grid-row: 1;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.sezione {
+  grid-row: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* La barra di stato attraversa tutta la larghezza, come dice la spec. */
+.barra-stato {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.pallino {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex: none;
+}
+.pallino.ok {
+  background: var(--ok);
+}
+.pallino.lavoro {
+  background: var(--accent);
+}
+.pallino.errore {
+  background: var(--err);
+}
+.barra-stato.errore {
+  color: var(--err);
+}
+
+/* --------------------------------------------------------- barra laterale */
+
+.identita {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px;
+}
+
+.marchio {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--strong);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.nome-app {
+  font-size: 17px;
+  letter-spacing: 0.2px;
+}
+
+.voci {
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+}
+
+.voce {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 24px;
+  color: var(--dim);
+  position: relative;
+  text-align: left;
+  transition: background 120ms ease, color 120ms ease, opacity 200ms ease;
+}
+
+.voce:hover:not(:disabled) {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+.voce.attiva {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+/* La barra verticale a filo del bordo sinistro: 3 px, solo sulla voce attiva. */
+.voce.attiva::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+}
+
+.voce.attiva svg {
+  color: var(--accent);
+}
+
+/* Modifica ed Esporta restano spente finche' non c'e' una trascrizione: e' il
+ * modo piu' semplice per far capire l'ordine delle cose senza spiegarlo. */
+.voce:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.piede-laterale {
+  margin-top: auto;
+  padding: 24px;
+  font-size: 11px;
+  color: var(--dim);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.piede-laterale a {
+  color: var(--dim);
+  text-decoration: none;
+}
+.piede-laterale a:hover {
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------ intestazioni */
+
+.testata {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 26px 32px 18px;
+  flex: none;
+}
+
+.titolo-sezione {
+  font-size: 26px;
+  font-weight: 400;
+  margin: 0;
+  letter-spacing: -0.2px;
+}
+
+.targhetta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--raggio);
+  color: var(--dim);
+  font-size: 12.5px;
+}
+
+.targhetta .nome-file {
+  color: var(--text);
+}
+
+.targhetta .separatore {
+  color: var(--border);
+}
+
+.a-destra {
+  margin-left: auto;
+}
+
+/* --------------------------------------------------------------- pulsanti */
+
+.pulsante {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--raggio);
+  color: var(--text);
+  font-size: 13px;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.pulsante:hover:not(:disabled) {
+  background: var(--surface2);
+}
+
+.pulsante:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* L'unico elemento violetto pieno di una schermata. */
+.pulsante.primario {
+  background: var(--strong);
+  border-color: var(--strong);
+  color: #fff;
+}
+.pulsante.primario:hover:not(:disabled) {
+  background: #7c4dff;
+}
+
+.pulsante.discreto {
+  border-color: transparent;
+  color: var(--dim);
+  padding: 6px 10px;
+}
+.pulsante.discreto:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface2);
+}
+
+/* ------------------------------------------------------------ area vuota */
+
+.corpo {
+  flex: 1;
+  min-height: 0;
+  padding: 0 32px 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+.blocco-vuoto {
+  margin: auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.area-trascinamento {
+  width: 60%;
+  height: 300px;
+  border: 1px dashed var(--border);
+  border-radius: var(--raggio-grande);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.area-trascinamento.sopra {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.area-trascinamento .invito {
+  font-size: 16px;
+}
+
+.area-trascinamento .oppure {
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.formati-accettati {
+  text-align: center;
+  color: var(--dim);
+  font-size: 11.5px;
+  margin: 14px 0 0;
+}
+
+/* ----------------------------------------------------------- elaborazione */
+
+.scheda-lavoro {
+  margin: auto;
+  width: 520px;
+}
+
+.scheda-lavoro h2 {
+  font-size: 16px;
+  font-weight: 400;
+  margin: 0 0 4px;
+}
+
+.scheda-lavoro .caratteristiche {
+  color: var(--dim);
+  font-size: 12px;
+  margin: 0 0 26px;
+}
+
+.fasi {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 26px;
+}
+
+.fase {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--dim);
+  font-size: 13.5px;
+}
+
+.fase .segno {
+  width: 14px;
+  text-align: center;
+  flex: none;
+}
+
+.fase.fatta {
+  color: var(--text);
+}
+.fase.fatta .segno {
+  color: var(--ok);
+}
+
+.fase.in-corso {
+  color: var(--text);
+}
+.fase.in-corso .segno {
+  color: var(--accent);
+}
+
+.fase .tempo {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.barra {
+  height: 3px;
+  background: var(--surface2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.barra > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 160ms linear;
+}
+
+/* ------------------------------------------------------------- anteprima */
+
+.anteprima {
+  border: 1px solid var(--border);
+  border-radius: var(--raggio);
+  overflow: hidden;
+  background: #000;
+  display: grid;
+  place-items: center;
+  position: relative;
+  min-height: 0;
+}
+
+.anteprima canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  /* La scacchiera si vede solo dove il fotogramma e' trasparente: e' il caso
+   * di un file audio, dove i sottotitoli sono soli. */
+  background-image: linear-gradient(45deg, #1b1b1b 25%, transparent 25%),
+    linear-gradient(-45deg, #1b1b1b 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1b1b1b 75%),
+    linear-gradient(-45deg, transparent 75%, #1b1b1b 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.guide {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.bottone-guide {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.bottone-guide:hover {
+  color: var(--text);
+}
+.bottone-guide.accese {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* -------------------------------------------------------------- trasporto */
+
+.trasporto {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 16px 0 12px;
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+}
+
+.riproduci {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.riproduci:hover {
+  background: var(--surface2);
+}
+
+.tempo-corrente {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.scorrimento {
+  flex: 1;
+  height: 3px;
+  background: var(--surface2);
+  border-radius: 2px;
+  position: relative;
+  cursor: pointer;
+}
+
+.scorrimento > i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.onda {
+  height: 46px;
+  width: 100%;
+  display: block;
+  cursor: pointer;
+}
+
+/* --------------------------------------------------------------- parole */
+
+.striscia {
+  display: flex;
+  gap: 8px;
+  overflow: hidden;
+  padding: 14px 0 4px;
+  min-height: 52px;
+  align-items: center;
+}
+
+.parola {
+  padding: 7px 14px;
+  border-radius: 8px;
+  background: var(--surface2);
+  color: var(--dim);
+  font-size: 13px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  transition: background 90ms ease, color 90ms ease;
+}
+
+.parola.attiva {
+  background: var(--strong);
+  color: #fff;
+}
+
+/* Le parole segnalate dicono dove guardare, anche se nella 0.1 non si possono
+ * ancora correggere. */
+.parola.incerta {
+  border: 1px dashed var(--accent);
+  color: var(--lilac);
+}
+
+/* -------------------------------------------------------------- modifica */
+
+.due-colonne {
+  display: grid;
+  grid-template-columns: 1fr 412px;
+  gap: 28px;
+  flex: 1;
+  min-height: 0;
+}
+
+.colonna-controlli {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  padding-bottom: 20px;
+}
+
+.colonna-controlli::-webkit-scrollbar {
+  width: 8px;
+}
+.colonna-controlli::-webkit-scrollbar-thumb {
+  background: var(--surface2);
+  border-radius: 4px;
+}
+
+.gruppo {
+  margin-bottom: 28px;
+}
+
+/* I gruppi si separano con lo spazio e con intestazioni testuali, non con
+ * riquadri. */
+.intestazione-gruppo {
+  font-size: 12px;
+  color: var(--dim);
+  margin: 0 0 14px;
+  letter-spacing: 0.3px;
+}
+
+.riga-controllo {
+  display: grid;
+  grid-template-columns: 128px 1fr;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.etichetta {
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.spiegazione {
+  grid-column: 2;
+  font-size: 11px;
+  color: var(--dim);
+  margin: -6px 0 12px;
+  line-height: 1.4;
+}
+
+.valore {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--text);
+  min-width: 62px;
+  text-align: right;
+}
+
+/* Il cursore: riempimento violetto, maniglia sobria. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  background: var(--surface2);
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text);
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: none;
+  border-radius: 50%;
+  background: var(--text);
+  cursor: pointer;
+}
+
+.cursore {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cursore .pista {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.cursore .riempimento {
+  position: absolute;
+  left: 0;
+  height: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* Scelta fra poche alternative: un gruppo di pulsanti, non un menu a tendina. */
+.scelta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.scelta button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.scelta button.attiva {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.scelta button:hover:not(.attiva) {
+  color: var(--text);
+}
+
+select {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.interruttore {
+  width: 38px;
+  height: 21px;
+  border-radius: 11px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  position: relative;
+  transition: background 120ms ease, border-color 120ms ease;
+  justify-self: start;
+}
+
+.interruttore > i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.interruttore.acceso {
+  border-color: var(--accent);
+}
+.interruttore.acceso > i {
+  transform: translateX(17px);
+  background: var(--accent);
+}
+
+/* Colore: codice esadecimale modificabile e campione cliccabile. */
+.colore {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.campione {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  flex: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+.campione input {
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.esadecimale {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 4px 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  text-transform: uppercase;
+}
+
+.esadecimale:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+/* -------------------------------------------------------------- esporta */
+
+.colonna-centrata {
+  width: 700px;
+  margin: 0 auto;
+  padding-top: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.elenco-formati {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 30px;
+}
+
+.formato {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 14px 18px;
+  border-radius: var(--raggio);
+  position: relative;
+  transition: background 120ms ease;
+}
+
+.formato:hover {
+  background: var(--surface2);
+}
+
+.formato.scelto {
+  background: var(--surface2);
+}
+
+.formato.scelto::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.formato .nome {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.formato .estensione {
+  color: var(--dim);
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+.formato .descrizione {
+  color: var(--dim);
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.destinazione {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.percorso {
+  flex: 1;
+  color: var(--dim);
+  font-size: 12.5px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.esito {
+  text-align: center;
+  padding-top: 60px;
+}
+
+.esito .segno-grande {
+  font-size: 34px;
+  color: var(--ok);
+}
+
+.esito .file-fatto {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--dim);
+  margin: 10px 0 26px;
+  word-break: break-all;
+}
+
+.bottoni-in-fila {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+/* --------------------------------------------------------- impostazioni */
+
+.riga-modello {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.riga-modello:last-child {
+  border-bottom: none;
+}
+
+.riga-modello .peso {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.avviso-in-fondo {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding: 14px 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.avviso-in-fondo .testo {
+  font-size: 13px;
+  color: var(--warn);
+}
+
+.nota {
+  color: var(--dim);
+  font-size: 11.5px;
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+
+.errore {
+  color: var(--err);
+}

@@ -14,9 +14,16 @@ precedente sia verificata.
 
 ## Stato
 
-Fatte le fasi da 0 a 5, ognuna verificata prima della successiva: e' quanto la
-spec chiama "l'applicazione vera". Restano la riga di comando a sottocomandi,
-lo scaricamento dei modelli, l'applicazione Tauri e la distribuzione.
+Fatte le fasi da 0 a 8, ognuna verificata prima della successiva. Resta la
+Fase 9: licenza, changelog, i due documenti in `docs/` e i workflow di build.
+
+Una nota sulla Fase 8: il codice dell'applicazione e' scritto per intero
+— comandi Tauri e interfaccia — e l'interfaccia e' stata provata in un
+browser, ma **la finestra non e' mai stata compilata su questa macchina**:
+mancano le librerie di sistema (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
+`libdbus-1-dev`), la cui installazione richiede i permessi di
+amministratore. Finche' quel comando non viene dato, la Fase 8 va considerata
+scritta e non verificata.
 
 ## Fasi
 
@@ -62,21 +69,30 @@ overlay (gia' fatto), WebM VP9 con alpha; SRT (fatto), VTT, JSON (fatto), TXT.
 Avanzamento, annullamento reale e cancellazione del file parziale.
 **Verifica**: ogni formato prodotto e riaperto; l'annullamento non lascia file.
 
-### Fase 6 — Riga di comando
-Sottocomandi `trascrivi`, `rendi`, `overlay`; `--preset`; `--json` scrive
-l'avanzamento su stderr.
-**Verifica**: i tre comandi della spec funzionano alla lettera.
+### ✅ Fase 6 — Riga di comando
+Sottocomandi `trascrivi`, `rendi`, `overlay`, piu' `caratteri`, `preset`,
+`formati` e `modelli`; `--preset`; `--json` scrive l'avanzamento su stderr.
+Il formato di uscita lo dice l'estensione di `--out`.
+**Verificata**: le tre righe della spec eseguite alla lettera su un mp4 reale;
+177 test verdi, clippy pulito.
 
-### Fase 7 — Modelli e dispositivo
-Scaricamento con verifica dell'hash e ripresa, nella cartella dati dell'utente;
-`libonnxruntime` impacchettata; ricaduta CUDA-CPU senza errori bloccanti;
-selettore della dimensione del modello.
-**Verifica**: primo avvio su una macchina senza modelli e senza GPU.
+### ✅ Fase 7 — Modelli e dispositivo
+Scaricamento con verifica SHA-256 e ripresa, nella cartella dati dell'utente;
+`libonnxruntime` cercata accanto all'eseguibile prima che nel sistema; ricaduta
+CUDA-CPU senza errori bloccanti e annunciata; selettore della dimensione.
+**Verificata**: `ggml-small.bin` scaricato, interrotto a meta' con Ctrl-C,
+ripreso e chiuso con l'impronta corretta; trascrizione completa con `small`
+scaricato e allineatore locale.
 
-### Fase 8 — Applicazione Tauri
-Guscio 1600x980 fisso, barra laterale, quattro sezioni, barra di stato; comandi
-sopra `verba-core`; le tre stanze nell'ordine della spec.
-**Verifica**: il percorso completo dal trascinamento del file all'export.
+### ✅ Fase 8 — Applicazione Tauri
+Guscio 1600x980 fisso, barra laterale, quattro sezioni, barra di stato; ventotto
+comandi sopra `verba-core`; le tre stanze nell'ordine della spec. Lo stato di
+un lavoro aperto sta in `verba_core::sessione`, non nel guscio: e' quello che
+tiene l'anteprima sullo stesso codice dell'export.
+**Verificata a meta'**: l'interfaccia e' stata percorsa per intero in un
+browser (i quattro stati di Carica, il pannello di Modifica, l'elenco dei
+formati, le impostazioni); il guscio Tauri **non e' stato compilato** perche'
+mancano le librerie di sistema.
 
 ### Fase 9 — Repository e distribuzione
 README, LICENSE, CHANGELOG, CONTRIBUTING, `docs/termini.md`, `docs/tempi.md`,
