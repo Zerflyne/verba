@@ -298,6 +298,44 @@ Tre preset ci sono gia': `verticale` (9:16, una riga, rettangolo viola),
 `orizzontale` (16:9, due righe, colonna piu' stretta) e `sobrio` (nessuna
 evidenziazione, solo testo bianco con contorno).
 
+### I formati di uscita
+
+| Cosa produce | `--uscita` | File | Codec |
+|---|---|---|---|
+| Video sottotitolato | `video` | `.mp4` | H.264 CRF 18, `yuv420p` |
+| Video sottotitolato senza perdita | `video-prores` | `.mov` | ProRes 422 HQ |
+| Overlay trasparente | `overlay` | `.mov` | ProRes 4444, `yuva444p10le` |
+| Overlay trasparente compatto | `overlay-webm` | `.webm` | VP9 con alfa |
+
+I due **overlay** contengono solo i sottotitoli su sfondo trasparente e si
+sovrappongono al filmato in montaggio; i due **video** hanno i sottotitoli
+impressi e richiedono un file video di partenza — da un file audio si puo'
+produrre solo un overlay, e chiederlo lo dice invece di fallire a meta'.
+
+I video sottotitolati **portano l'audio del file di partenza**, copiato senza
+ricodifica. I due overlay no, di proposito: in montaggio ci si ritroverebbe la
+stessa traccia due volte.
+
+Il nome proposto e' quello del sorgente con un suffisso — `_sub` per i video,
+`_overlay` per gli overlay — nella stessa cartella.
+
+**Sulla dimensione:** su un campione di dieci secondi a 720p il ProRes 4444
+occupa 32 MB e il WebM 316 KB. Il rapporto e' di due ordini di grandezza, e
+regge anche su file lunghi; il prezzo e' una codifica piu' lenta.
+
+**Una nota sul WebM con alfa.** Il canale c'e', ma il decodificatore VP9 nativo
+di ffmpeg lo ignora: `ffprobe` dichiara `yuv420p` e un `ffmpeg -i ... -pix_fmt
+rgba` restituisce un fotogramma opaco. Per vederlo bisogna chiedere
+esplicitamente il decodificatore di libvpx:
+
+```bash
+ffmpeg -vcodec libvpx-vp9 -i overlay.webm -pix_fmt rgba ...
+```
+
+Il tag `alpha_mode=1` nel contenitore dice che l'alfa c'e'. I browser e i
+programmi di montaggio che supportano VP9 con alfa la leggono senza dover
+chiedere nulla.
+
 ## Prerequisiti di build
 
 ```bash
@@ -680,7 +718,11 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 
 | Opzione | Default | Descrizione |
 |---|---|---|
+| `--uscita overlay\|overlay-webm\|video\|video-prores` | `overlay` | cosa produrre |
+| `--formati` | — | elenca i formati di uscita ed esce |
 | `--srt FILE` | — | esporta anche l'SRT |
+| `--vtt FILE` | — | esporta anche il WebVTT |
+| `--txt FILE` | — | esporta anche il solo testo |
 | `--srt-mode blocchi\|parola\|riga\|karaoke` | `blocchi` | struttura dell'SRT: `blocchi` = una battuta per blocco a schermo |
 | `--srt-max-chars` | `84` | caratteri per battuta in `riga` e `karaoke` |
 | `--json FILE` | — | mappatura parola-per-parola in JSON |

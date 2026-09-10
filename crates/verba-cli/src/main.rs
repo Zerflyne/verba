@@ -32,6 +32,7 @@ use tracing_subscriber::EnvFilter;
 
 use verba_core::audio::{AudioInput, NormalizeMode, PreprocessConfig};
 use verba_core::caratteri::{self, Catalogo, Richiesta};
+use verba_core::encoder::FormatoVideo;
 use verba_core::eventi::Fase;
 use verba_core::layout::{Allineamento, Attivazione, LayoutConfig, Tipografo};
 use verba_core::media::{Informazioni, Media};
@@ -43,7 +44,7 @@ use verba_core::scena::Scena;
 use verba_core::segmentation::SegmentationConfig;
 use verba_core::srt::{SrtConfig, SrtMode};
 use verba_core::transcribe::WhisperConfig;
-use verba_core::video::{self, VideoConfig};
+use verba_core::video::{self, Sfondo, VideoConfig};
 use verba_core::{align, audio, gpu, layout, srt};
 
 #[derive(Parser, Debug)]
@@ -60,9 +61,26 @@ struct Cli {
     #[arg(num_args = 1..)]
     input: Vec<String>,
 
-    /// File video di uscita, MOV con ProRes 4444 (default: <primo input>.mov).
+    /// File video di uscita. L'estensione predefinita dipende dal formato
+    /// (default: <input>_overlay.mov oppure <input>_sub.mp4).
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Cosa produrre.
+    #[arg(long, value_enum, default_value_t = UscitaArg::Overlay)]
+    uscita: UscitaArg,
+
+    /// Elenca i formati di uscita ed esce.
+    #[arg(long)]
+    formati: bool,
+
+    /// Esporta anche i sottotitoli in WebVTT.
+    #[arg(long, value_name = "FILE")]
+    vtt: Option<PathBuf>,
+
+    /// Esporta anche il solo testo, una battuta per riga.
+    #[arg(long, value_name = "FILE")]
+    txt: Option<PathBuf>,
 
     /// Esporta anche i sottotitoli in formato SRT (uscita accessoria).
     #[arg(long, value_name = "FILE")]
@@ -462,6 +480,30 @@ impl PosizioneArg {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum UscitaArg {
+    /// MOV ProRes 4444: solo i sottotitoli su sfondo trasparente.
+    Overlay,
+    /// WebM VP9 con alfa: come l'overlay, centinaia di volte piu' leggero e
+    /// piu' lento da produrre.
+    OverlayWebm,
+    /// MP4 H.264: i sottotitoli impressi sul filmato di partenza.
+    Video,
+    /// MOV ProRes 422 HQ: i sottotitoli impressi, senza perdita.
+    VideoProres,
+}
+
+impl UscitaArg {
+    fn formato(self) -> FormatoVideo {
+        match self {
+            UscitaArg::Overlay => FormatoVideo::Prores4444,
+            UscitaArg::OverlayWebm => FormatoVideo::Vp9Alpha,
+            UscitaArg::Video => FormatoVideo::H264,
+            UscitaArg::VideoProres => FormatoVideo::Prores422,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum PresetArg {
     Verticale,
     Orizzontale,
@@ -541,6 +583,23 @@ fn main() -> Result<()> {
 
     if cli.caratteri {
         elenca_caratteri(&cli);
+        return Ok(());
+    }
+
+    if cli.formati {
+        println!("Formati di uscita:\n");
+        for f in FormatoVideo::TUTTI {
+            let nome = match f {
+                FormatoVideo::Prores4444 => "overlay",
+                FormatoVideo::Vp9Alpha => "overlay-webm",
+                FormatoVideo::H264 => "video",
+                FormatoVideo::Prores422 => "video-prores",
+            };
+            println!("  {:<14} .{:<5} {}", nome, f.estensione(), f.etichetta());
+            println!("  {:<21} {}\n", "", f.descrizione());
+        }
+        println!("I due «video» imprimono i sottotitoli sul filmato e richiedono un file video");
+        println!("di partenza; da un file audio si puo' produrre solo un overlay.");
         return Ok(());
     }
 
@@ -724,27 +783,51 @@ fn main() -> Result<()> {
     );
 
     // ---------------------------------------------------------------- fase 5
-    // Disegno e codifica: MOV ProRes 4444 con canale alfa.
-    let out_path = output_path(&cli);
+    // Disegno e codifica.
+    let formato = cli.uscita.formato();
+    let out_path = output_path(&cli, formato);
     let vcfg = VideoConfig {
+        formato,
         fps_num,
         fps_den,
         qualita: cli.qualita,
         thread: threads,
         durata: cli.durata.unwrap_or_else(|| pcm.duration_secs()),
     };
+
+    // I formati che imprimono i sottotitoli hanno bisogno del filmato sotto.
+    // Aprirlo adesso, e non dopo mezz'ora di trascrizione, e' il minimo.
+    let mut filmato = if formato.ha_alfa() {
+        None
+    } else {
+        let percorso = std::path::PathBuf::from(&cli.input[0]);
+        match sorgente.as_ref().filter(|i| i.e_video()) {
+            Some(_) => Some((Media::apri(&percorso)?, percorso)),
+            None => bail!(
+                "«{}» imprime i sottotitoli sul filmato e serve un file video di partenza. \
+                 Da un file audio si puo' produrre solo un overlay: usa --uscita overlay.",
+                formato.etichetta()
+            ),
+        }
+    };
+
     info!(
         file = %out_path.display(),
+        formato = %formato.etichetta(),
         risoluzione = format!("{}x{}", layout_cfg.larghezza, layout_cfg.altezza),
         fps = format!("{fps_num}/{fps_den}"),
         durata = format!("{:.2} s", vcfg.durata),
-        "codifica del video dei sottotitoli"
+        "codifica"
     );
     let rasterizzatore = Rasterizzatore::nuovo(tipografo, layout_cfg.clone(), stile);
     let mut scena = Scena::nuova(blocchi, rasterizzatore);
     let stat = {
         let _c = progresso.inizia(Fase::Codifica);
-        video::esporta(&mut scena, &vcfg, &out_path, &progresso)?
+        let sfondo = match &mut filmato {
+            Some((media, percorso)) => Sfondo::Filmato { media, percorso },
+            None => Sfondo::Trasparente,
+        };
+        video::esporta(&mut scena, sfondo, &vcfg, &out_path, &progresso)?
     };
     info!(
         file = %out_path.display(),
@@ -775,6 +858,19 @@ fn main() -> Result<()> {
         std::fs::write(srt_path, srt::render(&cues))
             .with_context(|| format!("scrittura di {}", srt_path.display()))?;
         info!(file = %srt_path.display(), battute = cues.len(), "SRT scritto");
+    }
+    if cli.vtt.is_some() || cli.txt.is_some() {
+        let cues = srt::cues_da_blocchi(scena.blocchi());
+        if let Some(percorso) = &cli.vtt {
+            std::fs::write(percorso, srt::render_vtt(&cues))
+                .with_context(|| format!("scrittura di {}", percorso.display()))?;
+            info!(file = %percorso.display(), battute = cues.len(), "WebVTT scritto");
+        }
+        if let Some(percorso) = &cli.txt {
+            std::fs::write(percorso, srt::render_testo(&cues))
+                .with_context(|| format!("scrittura di {}", percorso.display()))?;
+            info!(file = %percorso.display(), battute = cues.len(), "testo scritto");
+        }
     }
     if let Some(json_path) = &cli.json {
         std::fs::write(json_path, srt::render_json(parole)?)
@@ -1107,15 +1203,20 @@ fn analizza_fps(s: &str) -> Result<(u32, u32)> {
     Ok(((valore * 1000.0).round() as u32, 1000))
 }
 
-fn output_path(cli: &Cli) -> PathBuf {
-    cli.output.clone().unwrap_or_else(|| {
-        let first = cli.input.first().map(String::as_str).unwrap_or("output");
-        if first == "-" {
-            PathBuf::from("output.mov")
-        } else {
-            PathBuf::from(first).with_extension("mov")
-        }
-    })
+/// Il file di uscita: quello chiesto, oppure il nome del sorgente con il
+/// suffisso e l'estensione del formato, nella stessa cartella.
+fn output_path(cli: &Cli, formato: FormatoVideo) -> PathBuf {
+    if let Some(p) = &cli.output {
+        return p.clone();
+    }
+    let primo = cli.input.first().map(String::as_str).unwrap_or("uscita");
+    let base = if primo == "-" { PathBuf::from("uscita") } else { PathBuf::from(primo) };
+    let radice = base.file_stem().and_then(|s| s.to_str()).unwrap_or("uscita");
+    let nome = format!("{radice}{}.{}", formato.suffisso(), formato.estensione());
+    match base.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join(nome),
+        _ => PathBuf::from(nome),
+    }
 }
 
 #[cfg(test)]

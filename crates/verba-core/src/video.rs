@@ -12,18 +12,22 @@
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use tracing::debug;
 
-use crate::encoder::{Encoder, EncoderConfig};
+use crate::encoder::{Encoder, EncoderConfig, FormatoVideo};
+use crate::media::Media;
 use crate::eventi::{Annullato, Evento, Fase, Progresso};
+use crate::layout::LayoutConfig;
 use crate::scena::{Scena, Stato};
 
 #[derive(Debug, Clone)]
 pub struct VideoConfig {
+    pub formato: FormatoVideo,
     pub fps_num: u32,
     pub fps_den: u32,
-    /// Quantizzatore ProRes: piu' basso = piu' qualita' e file piu' grande.
+    /// Quantizzatore per i ProRes, CRF per H.264 e VP9: piu' basso = piu'
+    /// qualita' e file piu' grande. Zero = il valore consigliato del formato.
     pub qualita: u32,
     pub thread: usize,
     /// Durata del video in secondi (di norma quella dell'audio).
@@ -32,7 +36,14 @@ pub struct VideoConfig {
 
 impl Default for VideoConfig {
     fn default() -> Self {
-        Self { fps_num: 30, fps_den: 1, qualita: 4, thread: 0, durata: 0.0 }
+        Self {
+            formato: FormatoVideo::Prores4444,
+            fps_num: 30,
+            fps_den: 1,
+            qualita: 0,
+            thread: 0,
+            durata: 0.0,
+        }
     }
 }
 
@@ -50,9 +61,26 @@ pub struct Statistiche {
     pub secondi: f64,
 }
 
+/// Da dove viene lo sfondo su cui si posano i sottotitoli.
+pub enum Sfondo<'a> {
+    /// Nessuno: il fotogramma resta trasparente e il file porta il canale
+    /// alfa. E' l'overlay da sovrapporre in montaggio.
+    Trasparente,
+    /// Il filmato di partenza, su cui i sottotitoli vengono impressi.
+    Filmato { media: &'a mut Media, percorso: &'a Path },
+}
+
 /// Rende i sottotitoli e scrive il file video.
+///
+/// Con [`Sfondo::Trasparente`] il fotogramma viene ridisegnato **solo quando
+/// cambia qualcosa** e fra un cambio e l'altro lo stesso fotogramma viene
+/// ricodificato tale e quale: a 30 fps una parola dura in media dodici
+/// fotogrammi. Con un filmato sotto questo non si puo' fare, perche' lo sfondo
+/// cambia comunque a ogni fotogramma; il disegno dei sottotitoli resta pero'
+/// riutilizzato.
 pub fn esporta(
     scena: &mut Scena,
+    sfondo: Sfondo<'_>,
     vcfg: &VideoConfig,
     percorso: &Path,
     progresso: &Progresso,
@@ -64,14 +92,30 @@ pub fn esporta(
     if vcfg.durata <= 0.0 {
         bail!("durata del video non valida: {} s", vcfg.durata);
     }
+    match (&sfondo, vcfg.formato.ha_alfa()) {
+        (Sfondo::Trasparente, false) => bail!(
+            "il formato «{}» imprime i sottotitoli sul video e serve un filmato di partenza.              Da un file audio si puo' produrre solo un overlay trasparente.",
+            vcfg.formato.etichetta()
+        ),
+        (Sfondo::Filmato { .. }, true) => bail!(
+            "il formato «{}» produce un overlay trasparente e non usa il filmato di partenza",
+            vcfg.formato.etichetta()
+        ),
+        _ => {}
+    }
 
     let fps = vcfg.fps();
     let totale = (vcfg.durata * fps).ceil().max(1.0) as u64;
     let stati = calcola_stati(scena, totale, vcfg);
 
-    let mut encoder = Encoder::apri(
+    let audio_da = match &sfondo {
+        Sfondo::Filmato { percorso, .. } => Some(*percorso),
+        Sfondo::Trasparente => None,
+    };
+    let mut encoder = Encoder::apri_con_audio(
         percorso,
         &EncoderConfig {
+            formato: vcfg.formato,
             larghezza: cfg.larghezza,
             altezza: cfg.altezza,
             fps_num: vcfg.fps_num,
@@ -79,44 +123,34 @@ pub fn esporta(
             qualita: vcfg.qualita,
             thread: vcfg.thread,
         },
+        audio_da,
     )?;
 
     let inizio = Instant::now();
     let disegni_iniziali = scena.disegni();
-
-    let mut fermato = false;
-    let mut i = 0usize;
-    while i < stati.len() {
-        // Quanti fotogrammi consecutivi condividono lo stesso stato.
-        let stato = stati[i];
-        let mut j = i + 1;
-        while j < stati.len() && stati[j] == stato {
-            j += 1;
+    let esito = match sfondo {
+        Sfondo::Trasparente => scrivi_trasparente(scena, &stati, &mut encoder, progresso),
+        Sfondo::Filmato { media, .. } => {
+            scrivi_impresso(scena, media, &stati, &cfg, vcfg, &mut encoder, progresso)
         }
-        let ripetizioni = (j - i) as u32;
-
-        // Il fotogramma esce dalla stessa funzione che alimenta l'anteprima:
-        // e' l'unico modo perche' le due non divergano.
-        let pixel = scena.disegna(stato);
-        encoder.scrivi(pixel, ripetizioni)?;
-
-        progresso.passo(Fase::Codifica, j as f32 / stati.len() as f32);
-
-        if progresso.annullato() {
-            fermato = true;
-            break;
-        }
-        i = j;
-    }
+    };
 
     // Annullare durante la codifica deve fermarla davvero e non lasciare in
     // giro un file mezzo scritto: l'encoder viene abbandonato senza chiudere
     // il contenitore, e il file parziale cancellato.
-    if fermato {
-        drop(encoder);
-        let _ = std::fs::remove_file(percorso);
-        progresso.emetti(Evento::Annullata);
-        return Err(Annullato.into());
+    match esito {
+        Ok(true) => {}
+        Ok(false) => {
+            drop(encoder);
+            let _ = std::fs::remove_file(percorso);
+            progresso.emetti(Evento::Annullata);
+            return Err(Annullato.into());
+        }
+        Err(e) => {
+            drop(encoder);
+            let _ = std::fs::remove_file(percorso);
+            return Err(e);
+        }
     }
 
     let fotogrammi = encoder.frame_scritti() as u64;
@@ -131,6 +165,114 @@ pub fn esporta(
         blocchi: scena.blocchi().len(),
         secondi,
     })
+}
+
+/// Overlay: i fotogrammi uguali si raggruppano e si codificano una volta sola.
+///
+/// Ritorna `false` se l'utente ha annullato.
+fn scrivi_trasparente(
+    scena: &mut Scena,
+    stati: &[Stato],
+    encoder: &mut Encoder,
+    progresso: &Progresso,
+) -> Result<bool> {
+    let mut i = 0usize;
+    while i < stati.len() {
+        let stato = stati[i];
+        let mut j = i + 1;
+        while j < stati.len() && stati[j] == stato {
+            j += 1;
+        }
+
+        // Il fotogramma esce dalla stessa funzione che alimenta l'anteprima:
+        // e' l'unico modo perche' le due non divergano.
+        let pixel = scena.disegna(stato);
+        encoder.scrivi(pixel, (j - i) as u32)?;
+
+        progresso.passo(Fase::Codifica, j as f32 / stati.len() as f32);
+        if progresso.annullato() {
+            return Ok(false);
+        }
+        i = j;
+    }
+    Ok(true)
+}
+
+/// Sottotitoli impressi: lo sfondo cambia a ogni fotogramma, quindi ogni
+/// fotogramma va composto e codificato.
+fn scrivi_impresso(
+    scena: &mut Scena,
+    media: &mut Media,
+    stati: &[Stato],
+    cfg: &LayoutConfig,
+    vcfg: &VideoConfig,
+    encoder: &mut Encoder,
+    progresso: &Progresso,
+) -> Result<bool> {
+    let info = media.informazioni();
+    let sorgente = info.risoluzione().context("il file di partenza non ha una traccia video")?;
+    if sorgente != (cfg.larghezza, cfg.altezza) {
+        bail!(
+            "i sottotitoli sono impaginati per {}x{} ma il filmato e' {}x{}:              per imprimerli le due risoluzioni devono coincidere",
+            cfg.larghezza,
+            cfg.altezza,
+            sorgente.0,
+            sorgente.1
+        );
+    }
+
+    let (w, h) = (cfg.larghezza as usize, cfg.altezza as usize);
+    let mut fotogramma = vec![0u8; w * h * 4];
+    let mut ultimo_valido = false;
+    let passo = vcfg.fps_den.max(1) as f64 / vcfg.fps_num as f64;
+
+    for (f, stato) in stati.iter().enumerate() {
+        let t = (f as f64 + 0.5) * passo;
+        // Oltre la fine del filmato si tiene l'ultimo fotogramma: capita solo
+        // quando l'audio dura piu' del video, e un salto al nero sarebbe
+        // peggio di un fermo immagine.
+        match media.fotogramma(t, &mut fotogramma) {
+            Ok(true) => ultimo_valido = true,
+            Ok(false) => {
+                if !ultimo_valido {
+                    fotogramma.chunks_exact_mut(4).for_each(|p| p.copy_from_slice(&[0, 0, 0, 255]));
+                    ultimo_valido = true;
+                }
+            }
+            Err(e) => return Err(e),
+        }
+
+        let sottotitoli = scena.disegna(*stato).to_vec();
+        sovrapponi(&mut fotogramma, &sottotitoli);
+        encoder.scrivi(&fotogramma, 1)?;
+
+        progresso.passo(Fase::Codifica, (f + 1) as f32 / stati.len() as f32);
+        if progresso.annullato() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Sovrappone i sottotitoli (RGBA ad alfa dritta) allo sfondo opaco.
+fn sovrapponi(sfondo: &mut [u8], sopra: &[u8]) {
+    for (giu, su) in sfondo.chunks_exact_mut(4).zip(sopra.chunks_exact(4)) {
+        let a = su[3] as u32;
+        if a == 0 {
+            continue;
+        }
+        if a == 255 {
+            giu.copy_from_slice(su);
+            continue;
+        }
+        let resto = 255 - a;
+        for c in 0..3 {
+            // Arrotondamento al piu' vicino: senza, i bordi antialiasati del
+            // testo si scuriscono di un livello a ogni composizione.
+            giu[c] = ((su[c] as u32 * a + giu[c] as u32 * resto + 127) / 255) as u8;
+        }
+        giu[3] = 255;
+    }
 }
 
 /// Per ogni fotogramma, cosa e' visibile.
@@ -237,7 +379,8 @@ mod tests {
         let _ = std::fs::remove_file(&percorso);
 
         let stat =
-            esporta(&mut scena(&cfg), &vcfg, &percorso, &Progresso::silenzioso()).unwrap();
+            esporta(&mut scena(&cfg), Sfondo::Trasparente, &vcfg, &percorso, &Progresso::silenzioso())
+                .unwrap();
 
         assert_eq!(stat.fotogrammi, 50, "2 s a 25 fps");
         assert!(stat.fotogrammi_disegnati < stat.fotogrammi, "ridisegnati tutti i fotogrammi");
@@ -261,7 +404,7 @@ mod tests {
         let progresso = Progresso::silenzioso();
         progresso.interruttore().annulla();
 
-        let esito = esporta(&mut scena(&cfg), &vcfg, &percorso, &progresso);
+        let esito = esporta(&mut scena(&cfg), Sfondo::Trasparente, &vcfg, &percorso, &progresso);
 
         let errore = esito.expect_err("la codifica doveva fermarsi");
         assert!(

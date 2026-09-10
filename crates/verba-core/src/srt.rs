@@ -203,11 +203,49 @@ pub fn timestamp(secs: f64) -> String {
     format!("{h:02}:{m:02}:{s:02},{ms:03}")
 }
 
+/// Serializza le battute in WebVTT.
+///
+/// Le differenze dall'SRT sono tre: l'intestazione obbligatoria, il punto
+/// decimale al posto della virgola, e le ore che si possono omettere — qui si
+/// scrivono comunque, perche' un file di due ore non deve cambiare formato a
+/// meta'.
+pub fn render_vtt(cues: &[Cue]) -> String {
+    let mut s = String::with_capacity(cues.len() * 64 + 16);
+    s.push_str("WEBVTT\n\n");
+    for (i, cue) in cues.iter().enumerate() {
+        s.push_str(&format!("{}\n", i + 1));
+        s.push_str(&format!("{} --> {}\n", timestamp_vtt(cue.start), timestamp_vtt(cue.end)));
+        s.push_str(cue.text.trim());
+        s.push_str("\n\n");
+    }
+    s
+}
+
+/// `HH:MM:SS.mmm` — il punto decimale, che e' cio' che distingue il WebVTT.
+pub fn timestamp_vtt(secs: f64) -> String {
+    timestamp(secs).replace(',', ".")
+}
+
+/// Il solo testo, una battuta per riga.
+///
+/// Serve a chi vuole leggere o rileggere quello che e' stato detto, non a chi
+/// deve sincronizzare qualcosa: i tempi non ci sono apposta.
+pub fn render_testo(cues: &[Cue]) -> String {
+    let mut s = String::with_capacity(cues.len() * 48);
+    for cue in cues {
+        for riga in cue.text.trim().lines() {
+            s.push_str(riga.trim());
+            s.push('\n');
+        }
+    }
+    s
+}
+
 /// Esporta la mappatura parola-per-parola in JSON (utile per editor esterni).
 pub fn render_json(words: &[Parola]) -> Result<String> {
     Ok(serde_json::to_string_pretty(&serde_json::json!({
-        "words": words,
-        "count": words.len(),
+        "parole": words,
+        "totale": words.len(),
     }))?)
 }
 
@@ -217,6 +255,27 @@ mod tests {
 
     fn w(testo: &str, inizio: f64, fine: f64, segmento: usize) -> Parola {
         Parola { segmento, ..Parola::nuova(testo, inizio, fine) }
+    }
+
+    #[test]
+    fn il_vtt_ha_l_intestazione_e_il_punto_decimale() {
+        let cues = vec![Cue { index: 1, start: 1.5, end: 2.25, text: "ciao".into() }];
+        let vtt = render_vtt(&cues);
+        assert!(vtt.starts_with("WEBVTT\n\n"), "manca l'intestazione: {vtt:?}");
+        assert!(vtt.contains("00:00:01.500 --> 00:00:02.250"), "{vtt}");
+        assert!(!vtt.contains(','), "il WebVTT non usa la virgola: {vtt}");
+    }
+
+    #[test]
+    fn il_testo_semplice_non_ha_tempi() {
+        let cues = vec![
+            Cue { index: 1, start: 1.5, end: 2.0, text: "prima riga".into() },
+            Cue { index: 2, start: 2.0, end: 3.0, text: "seconda\nterza".into() },
+        ];
+        let testo = render_testo(&cues);
+        assert_eq!(testo, "prima riga\nseconda\nterza\n");
+        assert!(!testo.contains("00:"), "{testo}");
+        assert!(!testo.contains("-->"), "{testo}");
     }
 
     #[test]
