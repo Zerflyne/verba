@@ -1,0 +1,59 @@
+# Su ogni push e su ogni pull request: test, clippy e build dell'interfaccia.
+#
+# Non compila l'applicazione Tauri: quella ha bisogno di GTK e WebKit, e
+# tenerli nella verifica di ogni commit costa qualche minuto a ogni giro senza
+# aggiungere granche' — il guscio e' sottile, e cio' che c'e' dentro e' gia'
+# coperto dai test di verba-core. Il rilascio invece la compila davvero.
+
+name: Verifica
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  motore:
+    name: Motore e riga di comando
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Librerie di sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libavcodec-dev libavformat-dev libavutil-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  interfaccia:
+    name: Interfaccia
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - run: npm ci --prefix ui
+
+      # `npm run build` fa anche `tsc --noEmit`: i tipi del ponte verso il
+      # motore sono scritti a mano, e un campo rinominato in Rust si vede solo
+      # qui.
+      - run: npm run build --prefix ui

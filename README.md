@@ -7,6 +7,8 @@ impressi, o come overlay su sfondo trasparente da montare altrove.
 **Gira interamente sulla tua macchina.** Nessun file lasciato su un server,
 nessun abbonamento, nessun limite di minuti. E' il motivo per cui esiste.
 
+![La sezione Carica a lavoro fatto](assets/schermate/carica.png)
+
 | Fase | Modello | Runtime |
 |---|---|---|
 | Pre-elaborazione | — | Symphonia + rubato, tutto in RAM |
@@ -371,6 +373,30 @@ ffmpeg -vcodec libvpx-vp9 -i overlay.webm -pix_fmt rgba ...
 Il tag `alpha_mode=1` nel contenitore dice che l'alfa c'e'. I browser e i
 programmi di montaggio che supportano VP9 con alfa la leggono senza dover
 chiedere nulla.
+
+## Installazione
+
+**Prima di tutto: il primo avvio scarica quasi 3 GB di modelli.** Non stanno
+dentro l'eseguibile e non ci possono stare — Whisper large-v3 da solo ne pesa
+2,9. Con `--modello small` scendono a 465 MB, perdendo qualche nome proprio.
+
+I pacchetti sono allegati alle
+[release](https://github.com/zerflyne/verba/releases): `.deb` per Debian e
+Ubuntu, `.AppImage` per le altre distribuzioni, un installer `.exe` per Windows.
+
+```bash
+sudo dpkg -i verba_0.1.0_amd64.deb          # Debian, Ubuntu
+chmod +x Verba_0.1.0_amd64.AppImage         # altre distribuzioni
+```
+
+**Su Windows l'installer non e' firmato**, e SmartScreen mostra *«Windows ha
+protetto il PC»*. Un certificato di firma costa qualche centinaio di euro
+l'anno e non ha senso per un progetto a questo punto. Per procedere: clic su
+**Ulteriori informazioni**, poi su **Esegui comunque**. Se l'avviso non compare
+del tutto e il file sparisce, e' Defender che l'ha messo in quarantena: va
+ripristinato dalla cronologia delle protezioni.
+
+Chi preferisce compilare trova tutto nella sezione seguente.
 
 ## Prerequisiti di build
 
@@ -984,6 +1010,35 @@ Fra le GPU idonee vince quella con piu' VRAM totale.
 
 La soglia di default e' 8000 MiB e non 8192: una scheda "da 8 GB" espone spesso
 8188 MiB, e una soglia in GiB stretti la escluderebbe per 4 MiB.
+
+## Le altre schermate
+
+| | |
+|---|---|
+| ![Modifica](assets/schermate/modifica.png) | ![Esporta](assets/schermate/esporta.png) |
+| **Modifica** — l'anteprima a sinistra, i controlli a destra. Nessuna modifica qui rilancia il modello: tutto si applica entro un fotogramma. | **Esporta** — i formati che hanno senso per questo file. In modalita' audio quelli video non compaiono affatto. |
+
+![Impostazioni](assets/schermate/impostazioni.png)
+
+Le schermate sono generate da `scripts/schermate.sh`: l'interfaccia viene
+aperta in Chrome headless con il banco di prova, senza toccare niente a mano.
+
+## Distribuzione
+
+Il workflow `.github/workflows/rilascio.yml` costruisce i tre pacchetti su ogni
+tag `v*` e li allega a una release in bozza.
+
+Due cose che vengono impacchettate e due che non lo sono:
+
+* **ONNX Runtime viaggia con l'applicazione.** Il workflow la scarica dalla
+  release ufficiale di Microsoft (1.22.x, l'unica che `ort 2.0.0-rc.10`
+  accetta) e la mette in `crates/verba-app/lib`, che `tauri.conf.json` dichiara
+  come risorsa. Chi installa non deve sapere che esiste.
+* **I modelli no.** Sono quasi tre gigabyte: li scarica l'applicazione al primo
+  avvio, con la barra di avanzamento e la ripresa se il collegamento cade.
+* **L'allineatore neanche**, e va esportato a mano: vedi sopra.
+* La riga di comando viene compilata nello stesso giro e allegata come
+  eseguibile a se'.
 
 ## Come nascono i tempi delle parole
 

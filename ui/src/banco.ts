@@ -223,6 +223,18 @@ function fase(nome: NomeFase, ms: number): Promise<void> {
   });
 }
 
+/** Lo stato in cui aprire l'interfaccia, letto dall'indirizzo.
+ *
+ *  `?banco=carica&t=1.2` apre la sezione Carica con il file gia' trascritto e
+ *  il cursore a 1,2 secondi. Serve a fare gli scatti per il README senza
+ *  cliccare a mano, e vale **solo** senza Tauri. */
+export function scenaIniziale(): { sezione: string; tempo: number } | null {
+  const q = new URLSearchParams(window.location.search);
+  const sezione = q.get("banco");
+  if (!sezione) return null;
+  return { sezione, tempo: Number(q.get("t") ?? "1.2") };
+}
+
 export async function bancoDiProva<T>(
   comando: string,
   argomenti?: Record<string, unknown>,

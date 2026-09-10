@@ -113,7 +113,7 @@ export function Esporta(p: Props) {
                 </Gruppo>
               )}
 
-              <div className="bottoni-in-fila" style={{ justifyContent: "flex-start" }}>
+              <div className="azione-in-fondo">
                 <button className="pulsante primario" onClick={p.onEsporta}>
                   Esporta
                 </button>

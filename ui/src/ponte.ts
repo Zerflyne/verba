@@ -22,7 +22,7 @@ import type {
   Riepilogo,
   StatoModelli,
 } from "./tipi";
-import { bancoDiProva, fotogrammaFinto, presetFinti } from "./banco";
+import { bancoDiProva, fotogrammaFinto, presetFinti, scenaIniziale } from "./banco";
 
 /** Vero quando la finestra non e' quella di Tauri. */
 export const finto = !("__TAURI_INTERNALS__" in window);
@@ -143,3 +143,8 @@ export async function fotogramma(t: number, larghezza: number, altezza: number):
 }
 
 export { presetFinti };
+
+/** Solo senza Tauri: la scena da aprire, se l'indirizzo ne chiede una. */
+export function scenaDaMostrare() {
+  return finto ? scenaIniziale() : null;
+}

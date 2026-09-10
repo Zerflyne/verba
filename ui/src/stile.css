@@ -440,6 +440,7 @@ select {
 /* ------------------------------------------------------------- anteprima */
 
 .anteprima {
+  flex: 1;
   border: 1px solid var(--border);
   border-radius: var(--raggio);
   overflow: hidden;
@@ -631,6 +632,12 @@ select {
   color: var(--dim);
 }
 
+/* Un pulsante in una riga di controllo e' largo quanto il suo testo: tirarlo
+   fino al bordo lo farebbe sembrare un campo. */
+.riga-controllo > .pulsante {
+  justify-self: start;
+}
+
 .spiegazione {
   grid-column: 2;
   font-size: 11px;
@@ -807,24 +814,33 @@ select {
 .colonna-centrata {
   width: 700px;
   margin: 0 auto;
-  padding-top: 8px;
+  padding-top: 4px;
   overflow-y: auto;
   flex: 1;
   min-height: 0;
 }
 
+/* Il pulsante primario non deve mai finire sotto la piega: e' l'unica cosa
+   che si e' venuti a fare in questa schermata. */
+.azione-in-fondo {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  padding: 14px 0 4px;
+}
+
 .elenco-formati {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-bottom: 30px;
+  gap: 1px;
+  margin-bottom: 18px;
 }
 
 .formato {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 14px 18px;
+  padding: 10px 18px;
   border-radius: var(--raggio);
   position: relative;
   transition: background 120ms ease;
@@ -871,7 +887,7 @@ select {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 28px;
+  margin-bottom: 18px;
 }
 
 .percorso {

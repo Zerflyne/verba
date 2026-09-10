@@ -39,6 +39,7 @@
       "icons/icon.ico"
     ],
     "category": "Video",
+    "resources": ["lib/*"],
     "shortDescription": "Sottotitoli automatici in locale",
     "longDescription": "Trascrive un file audio o video con i tempi di ogni parola e ne esporta i sottotitoli: come file di testo, come video con i sottotitoli impressi, o come overlay su sfondo trasparente. Gira interamente sulla macchina di chi lo usa.",
     "linux": {

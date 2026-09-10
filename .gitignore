@@ -9,3 +9,8 @@
 /prova*.mp3
 /prova*.wav
 /prova*.mp4
+
+# Le librerie native le mette il workflow di rilascio, non git.
+/crates/verba-app/lib/*.so*
+/crates/verba-app/lib/*.dll
+/crates/verba-app/lib/*.dylib

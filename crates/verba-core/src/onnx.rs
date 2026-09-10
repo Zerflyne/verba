@@ -133,8 +133,13 @@ fn cartelle_di_ricerca() -> Vec<PathBuf> {
         cartelle.push(exe.clone());
         cartelle.push(exe.join("lib"));
         if let Some(su) = exe.parent() {
+            // Un `.deb` mette il binario in `/usr/bin` e le risorse in
+            // `/usr/lib/<nome del prodotto>`; un `.AppImage` monta la stessa
+            // struttura sotto `$APPDIR/usr`.
             cartelle.push(su.join("lib"));
             cartelle.push(su.join("lib").join("verba"));
+            cartelle.push(su.join("lib").join("Verba"));
+            cartelle.push(su.join("lib").join("verba-app"));
         }
     }
     cartelle.push(cartelle::librerie());

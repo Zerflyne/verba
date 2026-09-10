@@ -84,7 +84,17 @@ export default function App() {
       setCaratteri(await ponte.caratteri());
       const serie = await ponte.presetDiSerie();
       setPreset(serie[1] ?? serie[0] ?? null);
+
+      // Senza Tauri, `?banco=carica&t=1.2` apre l'interfaccia gia' a lavoro
+      // fatto: serve a fare gli scatti del README senza cliccare a mano.
+      const scena = ponte.scenaDaMostrare();
+      if (scena) {
+        await carica("/esempio/video_tutorial.mp4");
+        setTempo(scena.tempo);
+        setSezione(scena.sezione as Sezione);
+      }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ------------------------------------------------------ gli eventi del motore
