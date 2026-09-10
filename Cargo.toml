@@ -1,72 +1,47 @@
-[package]
-name = "autosubtitler"
+[workspace]
+resolver = "2"
+members = ["crates/verba-core", "crates/verba-cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
-description = "Trascrizione audio parola-per-parola con Whisper large-v3, segmentazione pyannote (ONNX) e allineamento forzato wav2vec2-italian (ONNX). Output SRT."
 license = "MIT"
+repository = "https://github.com/zerflyne/verba"
+authors = ["zerflyne"]
 
-[lib]
-name = "autosubtitler"
-path = "src/lib.rs"
+[workspace.dependencies]
+verba-core = { path = "crates/verba-core" }
 
-[[bin]]
-name = "autosubtitler"
-path = "src/main.rs"
-
-[dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# --- audio: decodifica multi-formato in RAM + resampling ---
-symphonia = { version = "0.5", features = ["all"] }
-rubato = "0.15"
-
-# --- inferenza ONNX (pyannote + wav2vec2) ---
-# `load-dynamic`: libonnxruntime.so viene caricata a runtime da ORT_DYLIB_PATH.
-# Evita di dipendere dal download automatico (che richiede openssl) e permette
-# di puntare alla build GPU ufficiale di ONNX Runtime.
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "load-dynamic"] }
-ndarray = "0.16"
-
-# --- whisper.cpp bindings (large-v3, GGML/GGUF) ---
-whisper-rs = "=0.14.2"
-
-# --- interrogazione VRAM ---
-nvml-wrapper = "0.10"
-
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 csv = "1.4.0"
+
+# audio: decodifica multi-formato in RAM + ricampionamento
+symphonia = { version = "0.5", features = ["all"] }
+rubato = "0.15"
+
+# inferenza ONNX (pyannote + wav2vec2)
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "load-dynamic"] }
+ndarray = "0.16"
+
+# whisper.cpp (large-v3, GGML/GGUF)
+whisper-rs = "=0.14.2"
+
+# interrogazione VRAM
+nvml-wrapper = "0.10"
+
+# misura e disegno del testo
 cosmic-text = { version = "0.14.2", default-features = false, features = ["std", "swash"] }
 
-[features]
-default = []
-
-# Accelerazione CUDA per Whisper (whisper.cpp): richiede il CUDA toolkit (nvcc)
-# e cuDNN. ONNX Runtime non usa questa feature: per pyannote e wav2vec2 su GPU
-# basta puntare ORT_DYLIB_PATH a una build GPU di onnxruntime.
-#   cargo build --release --features cuda
-cuda = ["whisper-rs/cuda"]
-
-# Accelerazione Vulkan per Whisper: non richiede nvcc, bastano libvulkan-dev e
-# glslc (whisper.cpp compila i propri shader in fase di build). Piu' lenta di
-# CUDA, ma funziona anche sulle schede che i toolkit recenti hanno abbandonato,
-# come la Tesla P40 (compute 6.1). ONNX Runtime non ha un execution provider
-# Vulkan, quindi pyannote e wav2vec2 restano su CPU o su CUDA.
-#   cargo build --release --features vulkan
-vulkan = ["whisper-rs/vulkan"]
-
-# Alternativa a load-dynamic: fa scaricare a ort i binari (serve libssl-dev).
-ort-download = ["ort/download-binaries"]
+cc = "1.4.5"
+pkg-config = "0.3.34"
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-
-[build-dependencies]
-cc = "1.4.5"
-pkg-config = "0.3.34"

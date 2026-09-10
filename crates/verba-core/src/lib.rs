@@ -1,5 +1,9 @@
-//! AutoSubtitler — trascrizione audio parola-per-parola e sottotitoli grafici
-//! con sfondo trasparente.
+//! Verba — sottotitoli automatici in locale.
+//!
+//! Il motore: dal file di partenza alla trascrizione parola per parola, e da
+//! questa ai fotogrammi dei sottotitoli. Non sa che esistono ne' la riga di
+//! comando ne' l'applicazione: espone la pipeline come funzioni piu' un canale
+//! di eventi di avanzamento.
 //!
 //! I moduli sono utilizzabili anche separatamente:
 //!

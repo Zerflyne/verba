@@ -1,0 +1,54 @@
+[package]
+name = "verba-core"
+description = "Motore di Verba: trascrizione parola per parola in locale (Whisper large-v3, pyannote, wav2vec2) e composizione grafica dei sottotitoli."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "verba_core"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+csv.workspace = true
+
+symphonia.workspace = true
+rubato.workspace = true
+
+ort.workspace = true
+ndarray.workspace = true
+
+whisper-rs.workspace = true
+
+nvml-wrapper.workspace = true
+
+cosmic-text.workspace = true
+
+[features]
+default = []
+
+# Accelerazione CUDA per Whisper (whisper.cpp): richiede il CUDA toolkit (nvcc)
+# e cuDNN. ONNX Runtime non usa questa feature: per pyannote e wav2vec2 su GPU
+# basta puntare ORT_DYLIB_PATH a una build GPU di onnxruntime.
+cuda = ["whisper-rs/cuda"]
+
+# Accelerazione Vulkan per Whisper: non richiede nvcc, bastano libvulkan-dev e
+# glslc (whisper.cpp compila i propri shader in fase di build). Piu' lenta di
+# CUDA, ma funziona anche sulle schede che i toolkit recenti hanno abbandonato,
+# come la Tesla P40 (compute 6.1). ONNX Runtime non ha un execution provider
+# Vulkan, quindi pyannote e wav2vec2 restano su CPU o su CUDA.
+vulkan = ["whisper-rs/vulkan"]
+
+# Alternativa a load-dynamic: fa scaricare a ort i binari (serve libssl-dev).
+ort-download = ["ort/download-binaries"]
+
+[build-dependencies]
+cc.workspace = true
+pkg-config.workspace = true

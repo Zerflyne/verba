@@ -28,19 +28,19 @@ use clap::{Parser, ValueEnum};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use autosubtitler::audio::{AudioInput, NormalizeMode, PreprocessConfig};
-use autosubtitler::layout::{Attivazione, Formato, LayoutConfig, Posizione, Tipografo};
-use autosubtitler::prompt::{self, PromptConfig};
-use autosubtitler::render::{Colore, Rasterizzatore, Stile};
-use autosubtitler::segmentation::{SegmentationConfig, Segmenter};
-use autosubtitler::srt::{SrtConfig, SrtMode};
-use autosubtitler::transcribe::{Transcriber, WhisperConfig};
-use autosubtitler::video::{self, VideoConfig};
-use autosubtitler::{align, audio, gpu, layout, segmentation, srt, FONT_INTER_BOLD};
+use verba_core::audio::{AudioInput, NormalizeMode, PreprocessConfig};
+use verba_core::layout::{Attivazione, Formato, LayoutConfig, Posizione, Tipografo};
+use verba_core::prompt::{self, PromptConfig};
+use verba_core::render::{Colore, Rasterizzatore, Stile};
+use verba_core::segmentation::{SegmentationConfig, Segmenter};
+use verba_core::srt::{SrtConfig, SrtMode};
+use verba_core::transcribe::{Transcriber, WhisperConfig};
+use verba_core::video::{self, VideoConfig};
+use verba_core::{align, audio, gpu, layout, segmentation, srt, FONT_INTER_BOLD};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "autosubtitler",
+    name = "verba",
     about = "Sottotitoli grafici a sfondo trasparente (ProRes 4444) da un file audio: Whisper large-v3 + pyannote (ONNX) + wav2vec2-italian (ONNX)",
     version
 )]
@@ -333,7 +333,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(format!("autosubtitler={default_level},warn"))),
+                .unwrap_or_else(|_| EnvFilter::new(format!("verba={default_level},verba_core={default_level},warn"))),
         )
         .with_target(false)
         .init();

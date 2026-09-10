@@ -280,7 +280,7 @@ mod tests {
     use std::io::Write;
 
     fn scrivi(nome: &str, contenuto: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("autosubtitler_test_{nome}.csv"));
+        let path = std::env::temp_dir().join(format!("verba_test_{nome}.csv"));
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(contenuto.as_bytes()).unwrap();
         path

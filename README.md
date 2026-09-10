@@ -1,4 +1,4 @@
-# AutoSubtitler
+# Verba — sottotitoli automatici in locale
 
 Trascrizione audio con **mappatura testuale parola per parola** e **sottotitoli
 grafici su sfondo trasparente**, pronti da sovrapporre a un video nel montaggio.
@@ -26,32 +26,38 @@ prima e dopo lo scarico.
 ## Architettura
 
 ```
-src/
-  audio.rs         pre-elaborazione: multi-formato -> mono -> 16 kHz -> normalizzazione (0 file temporanei)
-  segmentation.rs  pyannote ONNX: finestre da 10 s, powerset/multi-label, isteresi
-  transcribe.rs    Whisper large-v3 via whisper.cpp; release() libera la VRAM
-  align.rs         wav2vec2 ONNX + Viterbi CTC: intervallo temporale di ogni parola;
-                   ripulisci() normalizza la sequenza (buchi, ordine, durate)
-  layout.rs        impaginazione: una riga per volta, finestre di accensione
-  render.rs        disegno RGBA: maschere, contorno, rettangolo smussato
-  encoder.rs       ponte FFI verso l'encoder C++
-  video.rs         dalla linea temporale ai fotogrammi codificati
-  srt.rs           battute blocchi / word / line / karaoke, timestamp HH:MM:SS,mmm
-  prompt.rs        initial prompt di Whisper da file CSV di termini
-  gpu.rs           selezione GPU su VRAM totale, monitoraggio NVML
-  onnx.rs          sessioni ORT condivise, softmax / log-softmax
-  main.rs          orchestrazione a fasi e CLI
-cpp/
-  encoder.h/.cpp   ProRes 4444 con alfa su libavcodec + libavformat
+crates/
+  verba-core/            libreria: tutta la logica, nessuna dipendenza da UI
+    src/
+      audio.rs           pre-elaborazione: multi-formato -> mono -> 16 kHz -> normalizzazione (0 file temporanei)
+      segmentation.rs    pyannote ONNX: finestre da 10 s, powerset/multi-label, isteresi
+      transcribe.rs      Whisper large-v3 via whisper.cpp; release() libera la VRAM
+      align.rs           wav2vec2 ONNX + Viterbi CTC: intervallo temporale di ogni parola;
+                         ripulisci() normalizza la sequenza (buchi, ordine, durate)
+      layout.rs          impaginazione: righe, chunk, finestre di accensione
+      render.rs          disegno RGBA: maschere, contorno, rettangolo smussato
+      encoder.rs         ponte FFI verso l'encoder C++
+      video.rs           dalla linea temporale ai fotogrammi codificati
+      srt.rs             battute blocchi / word / line / karaoke, timestamp HH:MM:SS,mmm
+      prompt.rs          initial prompt di Whisper da file CSV di termini
+      gpu.rs             selezione GPU su VRAM totale, monitoraggio NVML
+      onnx.rs            sessioni ORT condivise, softmax / log-softmax
+    cpp/
+      encoder.h/.cpp     ProRes 4444 con alfa su libavcodec + libavformat
+    assets/
+      Inter-Bold.ttf     Inter statico peso 700, incorporato nel binario
+  verba-cli/             binario `verba`: orchestrazione a fasi e riga di comando
 assets/
-  Inter-Bold.ttf   Inter statico peso 700, incorporato nel binario
+  fonts/                 caratteri aggiuntivi offerti nel selettore
+docs/
+  piano.md               piano di costruzione della 0.1
 scripts/
-  export_models.py esporta pyannote e wav2vec2 in ONNX
+  export_models.py       esporta pyannote e wav2vec2 in ONNX
 esempi/
-  vocabolario.csv  CSV di esempio per l'initial prompt
+  vocabolario.csv        CSV di esempio per l'initial prompt
 ```
 
-### `audio.rs` — pre-elaborazione (modulo separato, come richiesto)
+### `verba-core/src/audio.rs` — pre-elaborazione (modulo separato, come richiesto)
 
 * **Input misto**: percorsi di file, `-` per stdin, o buffer gia' in memoria
   (`AudioInput::Bytes`); piu' sorgenti nella stessa invocazione vengono
@@ -309,7 +315,7 @@ wav2vec2,tecnico,allineatore CTC
 ```
 
 ```bash
-autosubtitler prova.mp3 --prompt-csv esempi/vocabolario.csv
+verba prova.mp3 --prompt-csv esempi/vocabolario.csv
 ```
 
 Il parser e' tollerante e non richiede configurazione:
@@ -328,7 +334,7 @@ Il parser e' tollerante e non richiede configurazione:
 Il CSV si combina con il prompt libero, che lo precede:
 
 ```bash
-autosubtitler prova.mp3 \
+verba prova.mp3 \
   --prompt-csv esempi/vocabolario.csv \
   --prompt "Intervista tecnica in italiano." \
   --prompt-preamble "Termini ricorrenti:"
@@ -346,7 +352,7 @@ i primi termini sono quelli che arrivano al modello.
 Per vedere il prompt senza trascrivere nulla:
 
 ```bash
-autosubtitler prova.mp3 --prompt-csv esempi/vocabolario.csv --solo-prompt
+verba prova.mp3 --prompt-csv esempi/vocabolario.csv --solo-prompt
 ```
 
 Il prompt viene costruito e validato **prima** della decodifica audio e del
@@ -365,10 +371,10 @@ Tre condizioni, tutte necessarie.
    relativo alla cartella da cui lanci, quindi o ci si posiziona dentro, o si
    passano i percorsi assoluti con `--whisper-model`, `--segmentation-model`,
    `--align-model`, `--align-vocab`.
-3. **La build fatta**, `target/release/autosubtitler`.
+3. **La build fatta**, `target/release/verba`.
 
 ```bash
-cd /percorso/di/AutoSubtitler
+cd /percorso/di/Verba
 ```
 
 ### Esecuzione
@@ -377,13 +383,13 @@ Forma minima: scrive `nomefile.mov` accanto al sorgente — un ProRes 4444 in 9:
 con sfondo trasparente, da mettere sopra il video nel montaggio.
 
 ```bash
-./target/release/autosubtitler /percorso/del/file.mp4
+./target/release/verba /percorso/del/file.mp4
 ```
 
 Formato orizzontale, contorno nero, e anche l'SRT e il JSON:
 
 ```bash
-./target/release/autosubtitler /percorso/del/file.mp4 --formato 16:9 --bordo 5 \
+./target/release/verba /percorso/del/file.mp4 --formato 16:9 --bordo 5 \
     -o sottotitoli.mov --srt sottotitoli.srt --json parole.json -v
 ```
 
@@ -391,14 +397,14 @@ Risoluzione e frame rate espliciti (il frame rate accetta interi, decimali e
 frazioni: `30`, `29.97`, `30000/1001`):
 
 ```bash
-./target/release/autosubtitler intervista.m4a --risoluzione 2160x3840 --fps 29.97
+./target/release/verba intervista.m4a --risoluzione 2160x3840 --fps 29.97
 ```
 
 Stile: rettangolo arancione piu' schiacciato e piu' squadrato, contorno spesso,
 sottotitoli a meta' altezza.
 
 ```bash
-./target/release/autosubtitler intervista.m4a \
+./target/release/verba intervista.m4a \
     --colore-evidenziazione '#F97316' --altezza-evidenziazione 0.95 \
     --raggio-evidenziazione 0.08 --colore-bordo '#101010' --bordo 8 \
     --posizione centro
@@ -408,13 +414,13 @@ Accensione: rettangolo piu' in anticipo, che si spegne prima nei silenzi e non
 resta in coda alla riga.
 
 ```bash
-./target/release/autosubtitler intervista.m4a --anticipo 0.12 --pausa-massima 0.15 --coda 0
+./target/release/verba intervista.m4a --anticipo 0.12 --pausa-massima 0.15 --coda 0
 ```
 
 Nessun rettangolo, righe piu' lunghe:
 
 ```bash
-./target/release/autosubtitler intervista.m4a --senza-evidenziazione --durata-blocco 8
+./target/release/verba intervista.m4a --senza-evidenziazione --durata-blocco 8
 ```
 
 Sovrapposizione al video sorgente, per vedere il risultato:
@@ -426,21 +432,21 @@ ffmpeg -i video.mp4 -i sottotitoli.mov -filter_complex overlay -c:a copy antepri
 Piu' sorgenti concatenate, e ingresso da stdin:
 
 ```bash
-./target/release/autosubtitler parte1.wav parte2.mp3
-cat registrazione.opus | ./target/release/autosubtitler - -o out.mov
+./target/release/verba parte1.wav parte2.mp3
+cat registrazione.opus | ./target/release/verba - -o out.mov
 ```
 
 Solo pre-elaborazione audio, con statistiche: non carica alcun modello, ed e'
 il modo piu' rapido per verificare che la build regga.
 
 ```bash
-./target/release/autosubtitler prova.mp3 --solo-audio -v
+./target/release/verba prova.mp3 --solo-audio -v
 ```
 
 ### Averlo nel PATH
 
 ```bash
-ln -s "$PWD/target/release/autosubtitler" ~/.local/bin/autosubtitler
+ln -s "$PWD/target/release/verba" ~/.local/bin/verba
 ```
 
 Cosi' pero' si perde il `models/` relativo: lanciandolo da fuori dalla cartella
