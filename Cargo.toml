@@ -20,6 +20,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 csv = "1.4.0"
+ctrlc = "3.5"
 
 # audio: decodifica multi-formato in RAM + ricampionamento
 symphonia = { version = "0.5", features = ["all"] }

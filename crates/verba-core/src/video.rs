@@ -13,9 +13,10 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{bail, Result};
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::encoder::{Encoder, EncoderConfig};
+use crate::eventi::{Annullato, Evento, Fase, Progresso};
 use crate::layout::{Blocco, LayoutConfig};
 use crate::render::{Rasterizzatore, Tela};
 
@@ -62,6 +63,7 @@ pub fn esporta(
     cfg: &LayoutConfig,
     vcfg: &VideoConfig,
     percorso: &Path,
+    progresso: &Progresso,
 ) -> Result<Statistiche> {
     if vcfg.fps_num == 0 || vcfg.fps_den == 0 {
         bail!("frame rate non valido: {}/{}", vcfg.fps_num, vcfg.fps_den);
@@ -90,8 +92,8 @@ pub fn esporta(
     let mut blocco_preparato: Option<usize> = None;
     let mut disegnati = 0u64;
     let inizio = Instant::now();
-    let mut prossimo_avviso = 0.10f64;
 
+    let mut fermato = false;
     let mut i = 0usize;
     while i < stati.len() {
         // Quanti fotogrammi consecutivi condividono lo stesso stato.
@@ -115,14 +117,23 @@ pub fn esporta(
         disegnati += 1;
         encoder.scrivi(tela.pixel(), ripetizioni)?;
 
-        let avanzamento = j as f64 / stati.len() as f64;
-        if avanzamento >= prossimo_avviso {
-            info!(percentuale = (avanzamento * 100.0).round() as u32, "codifica in corso");
-            while prossimo_avviso <= avanzamento {
-                prossimo_avviso += 0.10;
-            }
+        progresso.passo(Fase::Codifica, j as f32 / stati.len() as f32);
+
+        if progresso.annullato() {
+            fermato = true;
+            break;
         }
         i = j;
+    }
+
+    // Annullare durante la codifica deve fermarla davvero e non lasciare in
+    // giro un file mezzo scritto: l'encoder viene abbandonato senza chiudere
+    // il contenitore, e il file parziale cancellato.
+    if fermato {
+        drop(encoder);
+        let _ = std::fs::remove_file(percorso);
+        progresso.emetti(Evento::Annullata);
+        return Err(Annullato.into());
     }
 
     let fotogrammi = encoder.frame_scritti() as u64;
@@ -220,6 +231,74 @@ mod tests {
         // a 1,0 s (fotogramma 30) la riga c'e', ma nessuna parola e' indicata
         assert_eq!(stati[30], Some((0, None)), "{:?}", stati[30]);
         assert_eq!(stati[0].map(|(_, p)| p), Some(Some(0)));
+    }
+
+    /// Un rasterizzatore pronto sui blocchi dati, per le prove di scrittura.
+    fn rasterizzatore(cfg: &LayoutConfig) -> Rasterizzatore {
+        let t = Tipografo::nuovo(FONT, cfg.corpo(), cfg.interlinea).unwrap();
+        Rasterizzatore::nuovo(t, cfg.clone(), crate::render::Stile::default())
+    }
+
+    fn percorso_di_prova(nome: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("verba_test_{nome}.mov"))
+    }
+
+    #[test]
+    fn esporta_scrive_il_file_e_conta_i_fotogrammi() {
+        // Piccolo apposta: qui si verifica il percorso completo fino a
+        // libavcodec, non la qualita' del disegno.
+        let cfg = LayoutConfig {
+            larghezza: 320,
+            altezza: 240,
+            dimensione_font: Some(24.0),
+            ..Default::default()
+        };
+        let blocchi = blocchi_di_prova(&cfg);
+        let vcfg = VideoConfig { fps_num: 25, fps_den: 1, durata: 2.0, ..Default::default() };
+        let percorso = percorso_di_prova("esporta");
+        let _ = std::fs::remove_file(&percorso);
+
+        let stat = esporta(
+            &blocchi,
+            &mut rasterizzatore(&cfg),
+            &cfg,
+            &vcfg,
+            &percorso,
+            &Progresso::silenzioso(),
+        )
+        .unwrap();
+
+        assert_eq!(stat.fotogrammi, 50, "2 s a 25 fps");
+        assert!(stat.fotogrammi_disegnati < stat.fotogrammi, "ridisegnati tutti i fotogrammi");
+        let scritto = std::fs::metadata(&percorso).unwrap().len();
+        assert!(scritto > 0, "file vuoto");
+        let _ = std::fs::remove_file(&percorso);
+    }
+
+    #[test]
+    fn annullare_ferma_la_codifica_e_cancella_il_file_parziale() {
+        let cfg = LayoutConfig {
+            larghezza: 320,
+            altezza: 240,
+            dimensione_font: Some(24.0),
+            ..Default::default()
+        };
+        let blocchi = blocchi_di_prova(&cfg);
+        let vcfg = VideoConfig { fps_num: 25, fps_den: 1, durata: 60.0, ..Default::default() };
+        let percorso = percorso_di_prova("annullata");
+        let _ = std::fs::remove_file(&percorso);
+
+        let progresso = Progresso::silenzioso();
+        progresso.interruttore().annulla();
+
+        let esito = esporta(&blocchi, &mut rasterizzatore(&cfg), &cfg, &vcfg, &percorso, &progresso);
+
+        let errore = esito.expect_err("la codifica doveva fermarsi");
+        assert!(
+            errore.downcast_ref::<Annullato>().is_some(),
+            "annullare non e' un errore qualsiasi: {errore}"
+        );
+        assert!(!percorso.exists(), "il file parziale e' rimasto: {}", percorso.display());
     }
 
     #[test]

@@ -21,6 +21,8 @@
 //!                                                              con canale alfa
 //! ```
 
+mod avanzamento;
+
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
@@ -29,15 +31,16 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use verba_core::audio::{AudioInput, NormalizeMode, PreprocessConfig};
+use verba_core::eventi::Fase;
 use verba_core::layout::{Attivazione, Formato, LayoutConfig, Posizione, Tipografo};
+use verba_core::pipeline::{self, ConfigTrascrizione, PercorsiModelli};
 use verba_core::prompt::{self, PromptConfig};
 use verba_core::render::{Colore, Rasterizzatore, Stile};
-use verba_core::segmentation::{SegmentationConfig, Segmenter};
+use verba_core::segmentation::SegmentationConfig;
 use verba_core::srt::{SrtConfig, SrtMode};
-use verba_core::transcribe::{Transcriber, WhisperConfig};
-use verba_core::trascrizione::Trascrizione;
+use verba_core::transcribe::WhisperConfig;
 use verba_core::video::{self, VideoConfig};
-use verba_core::{align, audio, gpu, layout, segmentation, srt, FONT_INTER_BOLD};
+use verba_core::{align, audio, gpu, layout, srt, FONT_INTER_BOLD};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -71,6 +74,12 @@ struct Cli {
     /// Esporta anche la mappatura parola-per-parola in JSON.
     #[arg(long)]
     json: Option<PathBuf>,
+
+    /// Come mostrare l'avanzamento delle fasi su stderr. `json` scrive un
+    /// oggetto per riga, ed e' la forma da usare quando Verba e' dentro un
+    /// altro script.
+    #[arg(long, value_enum, default_value_t = avanzamento::Formato::Testo)]
+    progresso: avanzamento::Formato,
 
     // ---- modelli ----
     /// Modello Whisper large-v3 in formato GGML/GGUF (whisper.cpp).
@@ -339,6 +348,17 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
 
+    // Il motore emette eventi; qui si decide che aspetto prendono.
+    let progresso = avanzamento::progresso(cli.progresso);
+
+    // Ctrl-C non uccide il processo: chiede alla pipeline di fermarsi al primo
+    // punto utile, cosi' il file video parziale viene cancellato invece di
+    // restare li' a sembrare un export riuscito.
+    let interruttore = progresso.interruttore();
+    if let Err(e) = ctrlc::set_handler(move || interruttore.annulla()) {
+        warn!(errore = %e, "Ctrl-C non intercettato: l'interruzione sara' brusca");
+    }
+
     let threads = cli
         .threads
         .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
@@ -383,7 +403,10 @@ fn main() -> Result<()> {
         ffmpeg_fallback: !cli.no_ffmpeg_fallback,
         ..Default::default()
     };
-    let pcm = audio::load_and_preprocess(&inputs, &pre_cfg)?;
+    let pcm = {
+        let _c = progresso.inizia(Fase::Preparazione);
+        audio::load_and_preprocess(&inputs, &pre_cfg)?
+    };
 
     if cli.solo_audio {
         let peak = pcm.samples.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
@@ -402,65 +425,35 @@ fn main() -> Result<()> {
     // Scelta del dispositivo: GPU se la VRAM *totale* raggiunge la soglia.
     let device = gpu::select(cli.min_vram_mib, cli.cpu, cli.gpu_index);
     info!(device = %device.describe(), "dispositivo di calcolo");
-    gpu::log_vram(&device, "iniziale");
 
-    // ---------------------------------------------------------------- fase 1
-    // Segmentazione con pyannote. La sessione ONNX viene chiusa subito dopo,
-    // per lasciare la VRAM libera a Whisper.
-    let segments = if cli.no_segmentation {
-        warn!("segmentazione disattivata: uso finestre uniformi da 25 s");
-        segmentation::uniform_segments(pcm.duration_secs(), 25.0)
-    } else {
-        let seg_cfg = SegmentationConfig { onset: cli.onset, offset: cli.offset, ..Default::default() };
-        let mut segmenter = Segmenter::new(&cli.segmentation_model, &device, seg_cfg, threads)
-            .context("inizializzazione del segmentatore pyannote")?;
-        let s = segmenter.run(&pcm)?;
-        drop(segmenter);
-        s
-    };
-
-    // ---------------------------------------------------------------- fase 2
-    // Trascrizione con Whisper large-v3.
-    let transcripts = if segments.is_empty() {
-        warn!("nessun parlato rilevato");
-        Vec::new()
-    } else {
-        let whisper_cfg = WhisperConfig {
+    // ------------------------------------------------------- fasi 1, 2 e 3
+    // Rilevamento del parlato, trascrizione e allineamento: l'ordine e la
+    // sequenza di caricamento e rilascio dei modelli stanno in verba-core,
+    // gli stessi per la riga di comando e per l'applicazione.
+    let cfg_trascrizione = ConfigTrascrizione {
+        modelli: PercorsiModelli {
+            whisper: cli.whisper_model.clone(),
+            segmentazione: cli.segmentation_model.clone(),
+            allineamento: cli.align_model.clone(),
+            vocabolario: cli.align_vocab.clone(),
+        },
+        segmentazione: SegmentationConfig {
+            onset: cli.onset,
+            offset: cli.offset,
+            ..Default::default()
+        },
+        whisper: WhisperConfig {
             language: cli.language.clone(),
             beam_size: cli.beam_size,
             threads: threads as i32,
             initial_prompt: initial_prompt.clone(),
             ..Default::default()
-        };
-        let mut transcriber = Transcriber::new(&cli.whisper_model, &device, whisper_cfg)
-            .context("inizializzazione di Whisper")?;
-        let t = transcriber.run(&pcm, &segments)?;
-
-        // *** Whisper viene scaricato dalla GPU PRIMA di caricare l'allineatore ***
-        transcriber.release();
-        drop(transcriber);
-        t
+        },
+        allineamento: align::AlignConfig::default(),
+        thread: threads,
+        finestre_uniformi: cli.no_segmentation.then_some(25.0),
     };
-
-    // ---------------------------------------------------------------- fase 3
-    // Allineamento forzato CTC con wav2vec2-italian: ora la GPU e' libera.
-    // Il risultato resta in RAM: non passa da alcun file intermedio.
-    let trascrizione = if transcripts.is_empty() {
-        warn!("Whisper non ha prodotto testo: il video sara' interamente trasparente");
-        Trascrizione::vuota(pcm.duration_secs())
-    } else {
-        let mut aligner = align::Aligner::new(
-            &cli.align_model,
-            &cli.align_vocab,
-            &device,
-            align::AlignConfig::default(),
-            threads,
-        )
-        .context("inizializzazione dell'allineatore wav2vec2")?;
-        let t = aligner.run(&pcm, &transcripts)?;
-        drop(aligner);
-        t
-    };
+    let trascrizione = pipeline::trascrivi(&pcm, &device, &cfg_trascrizione, &progresso)?;
     let parole = trascrizione.parole();
 
     // ---------------------------------------------------------------- fase 4
@@ -472,7 +465,10 @@ fn main() -> Result<()> {
     };
     let mut tipografo = Tipografo::nuovo(&font, layout_cfg.corpo(), layout_cfg.interlinea)
         .context("caricamento del font")?;
-    let blocchi = layout::impagina(parole, &mut tipografo, &layout_cfg)?;
+    let blocchi = {
+        let _c = progresso.inizia(Fase::Impaginazione);
+        layout::impagina(parole, &mut tipografo, &layout_cfg)?
+    };
     info!(
         righe = blocchi.len(),
         parole = parole.len(),
@@ -499,7 +495,10 @@ fn main() -> Result<()> {
         "codifica del video dei sottotitoli"
     );
     let mut rasterizzatore = Rasterizzatore::nuovo(tipografo, layout_cfg.clone(), stile);
-    let stat = video::esporta(&blocchi, &mut rasterizzatore, &layout_cfg, &vcfg, &out_path)?;
+    let stat = {
+        let _c = progresso.inizia(Fase::Codifica);
+        video::esporta(&blocchi, &mut rasterizzatore, &layout_cfg, &vcfg, &out_path, &progresso)?
+    };
     info!(
         file = %out_path.display(),
         fotogrammi = stat.fotogrammi,

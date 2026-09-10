@@ -16,19 +16,23 @@
 //!   stabili, separata dal risultato grezzo del modello;
 //! * [`pulizia`] — normalizzazione della sequenza: e' su questa funzione che si
 //!   regge tutto cio' che viene dopo;
+//! * [`pipeline`] — l'ordine delle fasi, uno solo per tutti i chiamanti;
 //! * [`layout`] — impaginazione dei sottotitoli misurata con cosmic-text;
 //! * [`render`] — disegno dei fotogrammi RGBA a sfondo trasparente;
 //! * [`encoder`] — encoder ProRes 4444 (libavcodec/libavformat, C++);
 //! * [`video`] — esportazione del filmato dei sottotitoli;
 //! * [`srt`] — generazione dei sottotitoli testuali (uscita accessoria);
+//! * [`eventi`] — avanzamento per fasi e annullamento;
 //! * [`gpu`] — selezione del dispositivo e monitoraggio VRAM.
 
 pub mod align;
 pub mod audio;
 pub mod encoder;
+pub mod eventi;
 pub mod gpu;
 pub mod layout;
 pub mod onnx;
+pub mod pipeline;
 pub mod prompt;
 pub mod pulizia;
 pub mod render;
