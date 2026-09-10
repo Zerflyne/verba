@@ -33,11 +33,18 @@ pub struct AlignConfig {
     pub max_chunk_secs: f64,
     /// Sotto questa confidenza la parola viene segnalata nel log.
     pub low_score_warn: f32,
+    /// Durata minima attribuita a una parola dalla normalizzazione.
+    pub durata_minima_parola: f64,
 }
 
 impl Default for AlignConfig {
     fn default() -> Self {
-        Self { do_normalize: true, max_chunk_secs: 30.0, low_score_warn: 0.10 }
+        Self {
+            do_normalize: true,
+            max_chunk_secs: 30.0,
+            low_score_warn: 0.10,
+            durata_minima_parola: crate::pulizia::DURATA_MINIMA_PAROLA,
+        }
     }
 }
 
@@ -197,7 +204,11 @@ impl Aligner {
             }
         }
 
-        let trascrizione = Trascrizione::nuova(words, pcm.duration_secs());
+        let trascrizione = Trascrizione::con_durata_minima(
+            words,
+            pcm.duration_secs(),
+            self.cfg.durata_minima_parola,
+        );
 
         let deboli = trascrizione.incerte(self.cfg.low_score_warn).count();
         info!(

@@ -26,7 +26,7 @@ mod avanzamento;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -35,6 +35,7 @@ use verba_core::caratteri::{self, Catalogo, Richiesta};
 use verba_core::eventi::Fase;
 use verba_core::layout::{Allineamento, Attivazione, Formato, LayoutConfig, Tipografo};
 use verba_core::pipeline::{self, ConfigTrascrizione, PercorsiModelli};
+use verba_core::progetto::{self, FormatoPreset, Preset};
 use verba_core::prompt::{self, PromptConfig};
 use verba_core::render::{Colore, Evidenziazione, Rasterizzatore, Stile};
 use verba_core::scena::Scena;
@@ -78,6 +79,24 @@ struct Cli {
     /// Esporta anche la mappatura parola-per-parola in JSON.
     #[arg(long)]
     json: Option<PathBuf>,
+
+    // ---- preset ----
+    /// Carica l'aspetto dei sottotitoli da un preset. Le opzioni scritte a
+    /// mano hanno comunque la precedenza su cio' che il preset dice.
+    #[arg(long, value_name = "FILE")]
+    preset: Option<PathBuf>,
+
+    /// Parte da uno dei preset di serie invece che dai valori predefiniti.
+    #[arg(long, value_enum, conflicts_with = "preset")]
+    preset_di_serie: Option<PresetArg>,
+
+    /// Salva in un preset l'aspetto risultante da queste opzioni.
+    #[arg(long, value_name = "FILE")]
+    salva_preset: Option<PathBuf>,
+
+    /// Elenca i preset di serie ed esce.
+    #[arg(long)]
+    preset_disponibili: bool,
 
     /// Come mostrare l'avanzamento delle fasi su stderr. `json` scrive un
     /// oggetto per riga, ed e' la forma da usare quando Verba e' dentro un
@@ -182,7 +201,7 @@ struct Cli {
     onset: f32,
 
     /// Soglia di disattivazione del parlato (isteresi).
-    #[arg(long, default_value_t = 0.35)]
+    #[arg(long, default_value_t = 0.60)]
     offset: f32,
 
     /// Salta pyannote e usa finestre uniformi di N secondi.
@@ -304,13 +323,18 @@ struct Cli {
 
     /// Tetto alla permanenza del rettangolo nella pausa che segue la parola:
     /// oltre questo silenzio il rettangolo si spegne e resta la sola riga.
-    #[arg(long, default_value_t = 0.35, value_name = "SECONDI")]
+    #[arg(long, default_value_t = 0.60, value_name = "SECONDI")]
     pausa_massima: f64,
 
     /// Permanenza del rettangolo dopo l'ultima parola della riga. Non puo'
     /// superare `--tenuta`, oltre la quale la riga sparisce.
-    #[arg(long, default_value_t = 0.25, value_name = "SECONDI")]
+    #[arg(long, default_value_t = 0.40, value_name = "SECONDI")]
     coda: f64,
+
+    /// Durata minima attribuita a una parola: sotto questa soglia
+    /// l'evidenziazione lampeggerebbe.
+    #[arg(long, default_value_t = verba_core::pulizia::DURATA_MINIMA_PAROLA, value_name = "SECONDI")]
+    durata_minima_parola: f64,
 
     // ---- stile ----
     /// Colore del testo, `#RRGGBB` o `#RRGGBBAA`.
@@ -433,6 +457,23 @@ impl PosizioneArg {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum PresetArg {
+    Verticale,
+    Orizzontale,
+    Sobrio,
+}
+
+impl PresetArg {
+    fn preset(self) -> Preset {
+        match self {
+            PresetArg::Verticale => progetto::verticale(),
+            PresetArg::Orizzontale => progetto::orizzontale(),
+            PresetArg::Sobrio => progetto::sobrio(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum EvidenziazioneArg {
     Rettangolo,
     Sottolineatura,
@@ -448,7 +489,13 @@ enum AllineamentoArg {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // Si passa dagli ArgMatches invece che da `Cli::parse()` per poter
+    // distinguere un'opzione scritta a mano da una lasciata al valore
+    // predefinito: senza quella distinzione un preset verrebbe sempre
+    // sovrascritto dai valori di clap.
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).map_err(|e| e.exit()).unwrap();
+    let date = DateAMano(matches);
 
     let default_level = if cli.verbose { "debug" } else { "info" };
     tracing_subscriber::fmt()
@@ -492,6 +539,16 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.preset_disponibili {
+        println!("Preset di serie:\n");
+        for p in progetto::di_serie() {
+            println!("  {:<14} {}", p.nome.to_lowercase(), descrivi_preset(&p));
+        }
+        println!("\nSi usano con --preset-di-serie NOME, oppure si salva il proprio con");
+        println!("--salva-preset FILE e lo si ricarica con --preset FILE.");
+        return Ok(());
+    }
+
     if cli.solo_prompt {
         match &initial_prompt {
             Some(p) => println!("{p}"),
@@ -506,8 +563,12 @@ fn main() -> Result<()> {
 
     // Le impostazioni grafiche vengono validate subito: un colore scritto male
     // non deve emergere dopo mezz'ora di trascrizione.
-    let layout_cfg = configura_layout(&cli)?;
-    let stile = configura_stile(&cli)?;
+    let base = preset_di_partenza(&cli)?;
+    if let Some(b) = &base {
+        info!(preset = %b.nome, "aspetto caricato da preset");
+    }
+    let layout_cfg = configura_layout(&cli, &date, base.as_ref())?;
+    let stile = configura_stile(&cli, &date, base.as_ref())?;
     let (fps_num, fps_den) = analizza_fps(&cli.fps)?;
 
     // ---------------------------------------------------------------- fase 0
@@ -569,7 +630,10 @@ fn main() -> Result<()> {
             initial_prompt: initial_prompt.clone(),
             ..Default::default()
         },
-        allineamento: align::AlignConfig::default(),
+        allineamento: align::AlignConfig {
+            durata_minima_parola: cli.durata_minima_parola.max(0.0),
+            ..Default::default()
+        },
         thread: threads,
         finestre_uniformi: cli.no_segmentation.then_some(25.0),
     };
@@ -579,12 +643,40 @@ fn main() -> Result<()> {
     // ---------------------------------------------------------------- fase 4
     // Impaginazione: le parole diventano righe — una alla volta a schermo —
     // misurate sul font che verra' effettivamente disegnato.
-    let (tipografo, esito_carattere) = costruisci_tipografo(&cli, &layout_cfg)?;
+    let (tipografo, esito_carattere) = costruisci_tipografo(&cli, &date, base.as_ref(), &layout_cfg)?;
     if let Some(avviso) = esito_carattere.avviso() {
         warn!("{avviso}");
         progresso.avviso(avviso);
     }
     let mut tipografo = tipografo;
+
+    if let Some(percorso) = &cli.salva_preset {
+        let formato = if cli.risoluzione.is_some() {
+            FormatoPreset::DalSorgente
+        } else if layout_cfg.larghezza >= layout_cfg.altezza {
+            FormatoPreset::Orizzontale
+        } else {
+            FormatoPreset::Verticale
+        };
+        let nome = percorso
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Personalizzato")
+            .to_string();
+        let preset = Preset::da(
+            &nome,
+            &layout_cfg,
+            &stile,
+            &Richiesta {
+                famiglia: esito_carattere.famiglia().to_string(),
+                peso: esito_carattere.peso(),
+                file: None,
+            },
+            formato,
+        );
+        preset.salva(percorso)?;
+        info!(file = %percorso.display(), nome = %preset.nome, "preset salvato");
+    }
 
     let blocchi = {
         let _c = progresso.inizia(Fase::Impaginazione);
@@ -698,12 +790,15 @@ fn elenca_caratteri(cli: &Cli) {
 /// Sceglie il carattere e prepara il motore di composizione.
 fn costruisci_tipografo(
     cli: &Cli,
+    date: &DateAMano,
+    base: Option<&Preset>,
     layout_cfg: &LayoutConfig,
 ) -> Result<(Tipografo, caratteri::Esito)> {
     let mut cat = catalogo(cli);
+    let d = base.map(|b| b.carattere()).unwrap_or_default();
     let richiesta = Richiesta {
-        famiglia: cli.carattere.clone(),
-        peso: cli.peso,
+        famiglia: date.oppure("carattere", &cli.carattere, d.famiglia),
+        peso: date.oppure("peso", &cli.peso, d.peso),
         file: cli.font.clone(),
     };
     let esito = cat.risolvi(&richiesta)?;
@@ -713,104 +808,206 @@ fn costruisci_tipografo(
     Ok((tipografo, esito))
 }
 
-fn configura_layout(cli: &Cli) -> Result<LayoutConfig> {
-    let formato = match cli.formato {
-        FormatoArg::Verticale => Formato::Verticale,
-        FormatoArg::Orizzontale => Formato::Orizzontale,
-    };
-    let (larghezza, altezza) = match &cli.risoluzione {
-        Some(s) => analizza_risoluzione(s)?,
-        None => formato.risoluzione(),
-    };
-    if !(0.0..0.45).contains(&cli.margine) {
-        bail!("--margine deve stare fra 0 e 0,45 (ricevuto {})", cli.margine);
+/// Le opzioni date davvero sulla riga di comando.
+///
+/// Serve a stratificare preset e opzioni: il preset fa da base, e cio' che
+/// l'utente ha scritto a mano lo scavalca. Senza questa distinzione un preset
+/// verrebbe sempre sovrascritto dai valori predefiniti di clap, che sono
+/// indistinguibili da una scelta esplicita.
+struct DateAMano(clap::ArgMatches);
+
+impl DateAMano {
+    fn ha(&self, nome: &str) -> bool {
+        matches!(self.0.value_source(nome), Some(clap::parser::ValueSource::CommandLine))
     }
-    if !(0.05..=1.0).contains(&cli.larghezza_massima) {
-        bail!(
-            "--larghezza-massima deve stare fra 0,05 e 1 (ricevuto {})",
-            cli.larghezza_massima
-        );
+
+    /// Il valore dell'opzione se e' stata data a mano, altrimenti il ripiego.
+    fn oppure<T: Clone>(&self, nome: &str, dato: &T, ripiego: T) -> T {
+        if self.ha(nome) {
+            dato.clone()
+        } else {
+            ripiego
+        }
     }
-    for (nome, valore) in
-        [("--posizione-verticale", cli.posizione_verticale), ("--posizione-orizzontale", cli.posizione_orizzontale)]
-    {
+}
+
+/// Una riga che descrive il preset, per l'elenco.
+fn descrivi_preset(p: &Preset) -> String {
+    let formato = match p.posizione.formato {
+        FormatoPreset::Verticale => "9:16",
+        FormatoPreset::Orizzontale => "16:9",
+        FormatoPreset::DalSorgente => "dal sorgente",
+    };
+    let forma = match p.evidenziazione.forma {
+        Evidenziazione::Rettangolo => "rettangolo",
+        Evidenziazione::Sottolineatura => "sottolineatura",
+        Evidenziazione::SoloColore => "solo colore",
+        Evidenziazione::Nessuna => "nessuna evidenziazione",
+    };
+    format!(
+        "{formato}, {} riga/e, {}, {forma}",
+        p.posizione.righe_max, p.testo.carattere
+    )
+}
+
+/// Il preset di partenza, se ne e' stato chiesto uno.
+fn preset_di_partenza(cli: &Cli) -> Result<Option<Preset>> {
+    if let Some(percorso) = &cli.preset {
+        return Ok(Some(Preset::carica(percorso)?));
+    }
+    Ok(cli.preset_di_serie.map(PresetArg::preset))
+}
+
+fn configura_layout(cli: &Cli, date: &DateAMano, base: Option<&Preset>) -> Result<LayoutConfig> {
+    // Il formato: quello scritto a mano vince, poi quello del preset, poi il
+    // predefinito.
+    let (larghezza, altezza) = match (&cli.risoluzione, base) {
+        (Some(s), _) => analizza_risoluzione(s)?,
+        // Il formato scritto a mano vince sul preset.
+        (None, Some(b)) if !date.ha("formato") => b.posizione.formato.risoluzione(None),
+        _ => match cli.formato {
+            FormatoArg::Verticale => Formato::Verticale,
+            FormatoArg::Orizzontale => Formato::Orizzontale,
+        }
+        .risoluzione(),
+    };
+
+    let d = base.map(|b| b.layout(Some((larghezza, altezza)))).unwrap_or_default();
+
+    let cfg = LayoutConfig {
+        larghezza,
+        altezza,
+        margine: date.oppure("margine", &cli.margine, d.margine),
+        larghezza_max: date.oppure("larghezza_massima", &cli.larghezza_massima, d.larghezza_max),
+        // --posizione, se c'e', ha la precedenza: e' la forma per nome della
+        // stessa grandezza.
+        posizione_verticale: match cli.posizione {
+            Some(p) => p.frazione(),
+            None => date.oppure(
+                "posizione_verticale",
+                &cli.posizione_verticale,
+                d.posizione_verticale,
+            ),
+        },
+        posizione_orizzontale: date.oppure(
+            "posizione_orizzontale",
+            &cli.posizione_orizzontale,
+            d.posizione_orizzontale,
+        ),
+        righe_max: date.oppure("righe_massime", &cli.righe_massime, d.righe_max),
+        allineamento: if date.ha("allineamento") {
+            match cli.allineamento {
+                AllineamentoArg::Sinistra => Allineamento::Sinistra,
+                AllineamentoArg::Centro => Allineamento::Centro,
+                AllineamentoArg::Destra => Allineamento::Destra,
+            }
+        } else {
+            d.allineamento
+        },
+        maiuscole: date.oppure("maiuscole", &cli.maiuscole, d.maiuscole),
+        dimensione_font: if date.ha("dimensione_font") {
+            cli.dimensione_font
+        } else {
+            d.dimensione_font
+        },
+        interlinea: date.oppure("interlinea", &cli.interlinea, d.interlinea),
+        durata_max: date.oppure("durata_blocco", &cli.durata_blocco, d.durata_max),
+        pausa_max: date.oppure("pausa_blocco", &cli.pausa_blocco, d.pausa_max),
+        tenuta: date.oppure("tenuta", &cli.tenuta, d.tenuta),
+        attivazione: Attivazione {
+            anticipo: date.oppure("anticipo", &cli.anticipo, d.attivazione.anticipo).max(0.0),
+            pausa_max: date
+                .oppure("pausa_massima", &cli.pausa_massima, d.attivazione.pausa_max)
+                .max(0.0),
+            coda: date.oppure("coda", &cli.coda, d.attivazione.coda).max(0.0),
+        },
+    };
+
+    if !(0.0..0.45).contains(&cfg.margine) {
+        bail!("--margine deve stare fra 0 e 0,45 (ricevuto {})", cfg.margine);
+    }
+    if !(0.05..=1.0).contains(&cfg.larghezza_max) {
+        bail!("--larghezza-massima deve stare fra 0,05 e 1 (ricevuto {})", cfg.larghezza_max);
+    }
+    for (nome, valore) in [
+        ("--posizione-verticale", cfg.posizione_verticale),
+        ("--posizione-orizzontale", cfg.posizione_orizzontale),
+    ] {
         if !(0.0..=1.0).contains(&valore) {
             bail!("{nome} deve stare fra 0 e 1 (ricevuto {valore})");
         }
     }
-    if !(1..=layout::RIGHE_MAX_CONSENTITE).contains(&cli.righe_massime) {
+    if !(1..=layout::RIGHE_MAX_CONSENTITE).contains(&cfg.righe_max) {
         bail!(
             "--righe-massime deve stare fra 1 e {} (ricevuto {})",
             layout::RIGHE_MAX_CONSENTITE,
-            cli.righe_massime
+            cfg.righe_max
         );
     }
-    Ok(LayoutConfig {
-        larghezza,
-        altezza,
-        margine: cli.margine,
-        larghezza_max: cli.larghezza_massima,
-        // --posizione, se c'e', ha la precedenza: e' la forma per nome della
-        // stessa grandezza.
-        posizione_verticale: cli
-            .posizione
-            .map(PosizioneArg::frazione)
-            .unwrap_or(cli.posizione_verticale),
-        posizione_orizzontale: cli.posizione_orizzontale,
-        righe_max: cli.righe_massime,
-        allineamento: match cli.allineamento {
-            AllineamentoArg::Sinistra => Allineamento::Sinistra,
-            AllineamentoArg::Centro => Allineamento::Centro,
-            AllineamentoArg::Destra => Allineamento::Destra,
-        },
-        maiuscole: cli.maiuscole,
-        dimensione_font: cli.dimensione_font,
-        interlinea: cli.interlinea,
-        durata_max: cli.durata_blocco,
-        pausa_max: cli.pausa_blocco,
-        tenuta: cli.tenuta,
-        attivazione: Attivazione {
-            anticipo: cli.anticipo.max(0.0),
-            pausa_max: cli.pausa_massima.max(0.0),
-            coda: cli.coda.max(0.0),
-        },
-    })
+    Ok(cfg)
 }
 
-fn configura_stile(cli: &Cli) -> Result<Stile> {
+fn configura_stile(cli: &Cli, date: &DateAMano, base: Option<&Preset>) -> Result<Stile> {
+    let d = match base {
+        Some(b) => b.stile()?,
+        None => Stile::default(),
+    };
     let leggi = |nome: &str, valore: &str| -> Result<Colore> {
         Colore::da_esadecimale(valore).map_err(|e| anyhow::anyhow!("{nome}: {e}"))
     };
+    let colore = |opzione: &str, valore: &str, ripiego: Colore| -> Result<Colore> {
+        if date.ha(opzione) {
+            leggi(&format!("--{}", opzione.replace('_', "-")), valore)
+        } else {
+            Ok(ripiego)
+        }
+    };
+
     Ok(Stile {
-        colore: leggi("--colore", &cli.colore)?,
-        colore_attivo: leggi("--colore-attivo", &cli.colore_attivo)?,
-        colore_evidenziazione: leggi("--colore-evidenziazione", &cli.colore_evidenziazione)?,
-        colore_bordo: leggi("--colore-bordo", &cli.colore_bordo)?,
-        bordo: cli.bordo.max(0.0),
+        colore: colore("colore", &cli.colore, d.colore)?,
+        colore_attivo: colore("colore_attivo", &cli.colore_attivo, d.colore_attivo)?,
+        colore_evidenziazione: colore(
+            "colore_evidenziazione",
+            &cli.colore_evidenziazione,
+            d.colore_evidenziazione,
+        )?,
+        colore_bordo: colore("colore_bordo", &cli.colore_bordo, d.colore_bordo)?,
+        bordo: date.oppure("bordo", &cli.bordo, d.bordo).max(0.0),
         // --senza-evidenziazione e' la forma breve di --evidenziazione nessuna
         // e ha la precedenza.
         evidenziazione: if cli.senza_evidenziazione {
             Evidenziazione::Nessuna
-        } else {
+        } else if date.ha("evidenziazione") {
             match cli.evidenziazione {
                 EvidenziazioneArg::Rettangolo => Evidenziazione::Rettangolo,
                 EvidenziazioneArg::Sottolineatura => Evidenziazione::Sottolineatura,
                 EvidenziazioneArg::SoloColore => Evidenziazione::SoloColore,
                 EvidenziazioneArg::Nessuna => Evidenziazione::Nessuna,
             }
+        } else {
+            d.evidenziazione
         },
-        padding: cli.padding_evidenziazione.max(0.0),
-        altezza: cli.altezza_evidenziazione.max(0.0),
-        raggio: cli.raggio_evidenziazione.max(0.0),
-        spessore_sottolineatura: cli.spessore_sottolineatura.max(0.0),
-        ombra: !cli.senza_ombra,
-        colore_ombra: leggi("--colore-ombra", &cli.colore_ombra)?,
-        ombra_spostamento: cli.ombra_spostamento.max(0.0),
-        ombra_sfocatura: cli.ombra_sfocatura.max(0.0),
+        padding: date.oppure("padding_evidenziazione", &cli.padding_evidenziazione, d.padding).max(0.0),
+        altezza: date.oppure("altezza_evidenziazione", &cli.altezza_evidenziazione, d.altezza).max(0.0),
+        raggio: date.oppure("raggio_evidenziazione", &cli.raggio_evidenziazione, d.raggio).max(0.0),
+        spessore_sottolineatura: date
+            .oppure(
+                "spessore_sottolineatura",
+                &cli.spessore_sottolineatura,
+                d.spessore_sottolineatura,
+            )
+            .max(0.0),
+        ombra: if cli.senza_ombra { false } else { d.ombra },
+        colore_ombra: colore("colore_ombra", &cli.colore_ombra, d.colore_ombra)?,
+        ombra_spostamento: date
+            .oppure("ombra_spostamento", &cli.ombra_spostamento, d.ombra_spostamento)
+            .max(0.0),
+        ombra_sfocatura: date
+            .oppure("ombra_sfocatura", &cli.ombra_sfocatura, d.ombra_sfocatura)
+            .max(0.0),
     })
 }
 
-/// `LARGHEZZAxALTEZZA`, con dimensioni pari (ProRes lavora a blocchi 16x16).
 fn analizza_risoluzione(s: &str) -> Result<(u32, u32)> {
     let (l, a) = s
         .split_once(['x', 'X', '*'])

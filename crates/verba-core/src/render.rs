@@ -20,6 +20,7 @@
 //! l'encoder ProRes 4444 e, a valle, qualsiasi montaggio video.
 
 use cosmic_text::{Attrs, Buffer, Family, Shaping, SwashCache, SwashContent};
+use serde::{Deserialize, Serialize};
 
 use crate::layout::{Allineamento, Blocco, LayoutConfig, Tipografo};
 
@@ -32,6 +33,16 @@ impl Colore {
     pub const NERO: Colore = Colore([0, 0, 0, 255]);
     /// Viola dell'evidenziazione.
     pub const VIOLA: Colore = Colore([124, 58, 237, 255]);
+
+    /// Scrive `#RRGGBB`, oppure `#RRGGBBAA` se non e' del tutto opaco.
+    pub fn esadecimale(&self) -> String {
+        let [r, g, b, a] = self.0;
+        if a == 255 {
+            format!("#{r:02X}{g:02X}{b:02X}")
+        } else {
+            format!("#{r:02X}{g:02X}{b:02X}{a:02X}")
+        }
+    }
 
     /// Legge `#RRGGBB` o `#RRGGBBAA` (il cancelletto e' facoltativo).
     pub fn da_esadecimale(s: &str) -> Result<Colore, String> {
@@ -49,7 +60,8 @@ impl Colore {
 }
 
 /// Come viene segnalata la parola in corso di pronuncia.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Evidenziazione {
     /// Un rettangolo pieno con gli angoli arrotondati, dietro la parola.
     #[default]

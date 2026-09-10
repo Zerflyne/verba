@@ -21,6 +21,7 @@ use std::ops::Range;
 
 use anyhow::{bail, Context, Result};
 use cosmic_text::{fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight, Wrap};
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::caratteri::{Catalogo, Esito};
@@ -46,7 +47,8 @@ impl Formato {
 }
 
 /// Allineamento delle righe dentro la colonna di testo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Allineamento {
     Sinistra,
     #[default]
@@ -74,7 +76,7 @@ pub struct Attivazione {
 
 impl Default for Attivazione {
     fn default() -> Self {
-        Self { anticipo: 0.06, pausa_max: 0.35, coda: 0.25 }
+        Self { anticipo: 0.06, pausa_max: 0.60, coda: 0.40 }
     }
 }
 

@@ -34,6 +34,7 @@ pub mod gpu;
 pub mod layout;
 pub mod onnx;
 pub mod pipeline;
+pub mod progetto;
 pub mod prompt;
 pub mod pulizia;
 pub mod render;

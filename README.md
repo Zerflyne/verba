@@ -225,6 +225,38 @@ Google Fonts e istanzia nei pesi che servono le famiglie pubblicate solo in
 forma variabile — cosmic-text sceglie il carattere per peso dichiarato, e da un
 file variabile ne leggerebbe uno solo.
 
+### I preset
+
+Un preset e' l'aspetto dei sottotitoli in un file JSON: testo, colori,
+evidenziazione, posizione, tempi. **Non contiene le impostazioni del modello ne'
+riferimenti a file** — le prime perche' cambiarle vorrebbe dire ritrascrivere, i
+secondi perche' un preset deve poter passare da una macchina all'altra. Per la
+stessa ragione contiene il *formato* e non la risoluzione: un preset verticale
+funziona su un 1080x1920 come su un 720x1280.
+
+```bash
+verba prova.mp3 --carattere Poppins --peso 900 --righe-massime 2 \
+      --evidenziazione sottolineatura --colore-evidenziazione '#E0B25C' \
+      --salva-preset mio.json -o prova.mov
+
+verba altro.mp3 --preset mio.json -o altro.mov
+```
+
+Le opzioni scritte a mano scavalcano il preset, non il contrario:
+
+```bash
+verba altro.mp3 --preset mio.json --carattere Oswald -o altro.mov
+```
+
+Perche' questo funzioni la riga di comando distingue un'opzione **scritta** da
+una lasciata al valore predefinito: senza quella distinzione il preset verrebbe
+sempre sovrascritto dai valori di serie di clap, che sono indistinguibili da una
+scelta esplicita.
+
+Tre preset ci sono gia': `verticale` (9:16, una riga, rettangolo viola),
+`orizzontale` (16:9, due righe, colonna piu' stretta) e `sobrio` (nessuna
+evidenziazione, solo testo bianco con contorno).
+
 ## Prerequisiti di build
 
 ```bash
@@ -586,8 +618,9 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 | `--altezza-evidenziazione` | `1.12` | altezza del rettangolo, in frazione del corpo |
 | `--raggio-evidenziazione` | `0.20` | raggio degli angoli, in frazione del corpo |
 | `--anticipo` | `0.06` | quanto il rettangolo precede la parola, in secondi |
-| `--pausa-massima` | `0.35` | tetto alla permanenza nel silenzio, in secondi |
-| `--coda` | `0.25` | permanenza dopo l'ultima parola della riga, in secondi |
+| `--pausa-massima` | `0.60` | tetto alla permanenza nel silenzio, in secondi |
+| `--coda` | `0.40` | permanenza dopo l'ultima parola del blocco, in secondi |
+| `--durata-minima-parola` | `0.08` | durata minima attribuita a una parola, in secondi |
 | `--senza-evidenziazione` | off | non disegnare il rettangolo |
 
 **Stile del testo**
@@ -610,6 +643,10 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 | `--srt-mode blocchi\|parola\|riga\|karaoke` | `blocchi` | struttura dell'SRT: `blocchi` = una battuta per blocco a schermo |
 | `--srt-max-chars` | `84` | caratteri per battuta in `riga` e `karaoke` |
 | `--json FILE` | — | mappatura parola-per-parola in JSON |
+| `--preset FILE` | — | carica l'aspetto da un preset |
+| `--preset-di-serie` | — | `verticale`, `orizzontale` o `sobrio` |
+| `--salva-preset FILE` | — | salva l'aspetto risultante |
+| `--preset-disponibili` | — | elenca i preset di serie ed esce |
 | `--language` | `it` | lingua Whisper (`auto` per rilevamento) |
 | `--beam-size` | `5` | ampiezza del beam search |
 | `--prompt` | — | prompt iniziale libero (stile, punteggiatura) |

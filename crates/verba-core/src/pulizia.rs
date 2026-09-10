@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use crate::trascrizione::Parola;
 
 /// Durata minima attribuita a una parola, in secondi.
-pub const DURATA_MINIMA_PAROLA: f64 = 0.04;
+pub const DURATA_MINIMA_PAROLA: f64 = 0.08;
 
 /// Normalizza la sequenza di parole prodotta dall'allineamento.
 ///
