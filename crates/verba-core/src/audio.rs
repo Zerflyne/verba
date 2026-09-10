@@ -593,45 +593,54 @@ mod tests {
     }
 }
 
-/// Scrive il PCM come WAV a 16 bit, mono, alla frequenza che ha.
+/// Il PCM come WAV a 16 bit, mono, alla frequenza che ha, in memoria.
 ///
 /// Serve alla riproduzione nell'anteprima: la webview sa suonare un WAV
 /// qualunque sia il formato di partenza, mentre di un `.mkv` o di un `.opus`
 /// non c'e' garanzia. Passare dal PCM gia' decodificato ha anche il pregio di
 /// far ascoltare **esattamente** l'audio su cui i modelli hanno lavorato.
-pub fn scrivi_wav(pcm: &Pcm, dove: &Path) -> Result<()> {
+///
+/// In memoria e non su disco perche' i byte devono arrivare alla finestra
+/// come `blob:`: un file, per quanto in una cartella temporanea, andrebbe
+/// servito su uno schema che la webview per i media non accetta.
+///
+/// Costa 32 kB per secondo di audio — due minuti sono 4 MB, un'ora 115.
+pub fn wav_byte(pcm: &Pcm) -> Vec<u8> {
     let canali: u16 = 1;
     let bit: u16 = 16;
     let byte_per_campione = (bit / 8) as u32;
     let dati = pcm.samples.len() as u32 * byte_per_campione;
     let byte_al_secondo = pcm.sample_rate * canali as u32 * byte_per_campione;
 
-    let file = std::fs::File::create(dove)
-        .with_context(|| format!("creazione di {}", dove.display()))?;
-    let mut w = std::io::BufWriter::new(file);
+    let mut w: Vec<u8> = Vec::with_capacity(44 + pcm.samples.len() * 2);
 
-    w.write_all(b"RIFF")?;
-    w.write_all(&(36 + dati).to_le_bytes())?;
-    w.write_all(b"WAVEfmt ")?;
-    w.write_all(&16u32.to_le_bytes())?; // dimensione del blocco fmt
-    w.write_all(&1u16.to_le_bytes())?; // PCM interi
-    w.write_all(&canali.to_le_bytes())?;
-    w.write_all(&pcm.sample_rate.to_le_bytes())?;
-    w.write_all(&byte_al_secondo.to_le_bytes())?;
-    w.write_all(&(canali * byte_per_campione as u16).to_le_bytes())?;
-    w.write_all(&bit.to_le_bytes())?;
-    w.write_all(b"data")?;
-    w.write_all(&dati.to_le_bytes())?;
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + dati).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes()); // dimensione del blocco fmt
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM interi
+    w.extend_from_slice(&canali.to_le_bytes());
+    w.extend_from_slice(&pcm.sample_rate.to_le_bytes());
+    w.extend_from_slice(&byte_al_secondo.to_le_bytes());
+    w.extend_from_slice(&(canali * byte_per_campione as u16).to_le_bytes());
+    w.extend_from_slice(&bit.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&dati.to_le_bytes());
 
     for &c in &pcm.samples {
         // La normalizzazione puo' aver portato qualche campione oltre 1.0:
         // senza il clamp il troncamento a i16 lo farebbe girare di segno, e si
         // sentirebbe come uno schiocco.
         let v = (c.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-        w.write_all(&v.to_le_bytes())?;
+        w.extend_from_slice(&v.to_le_bytes());
     }
-    w.flush().with_context(|| format!("scrittura di {}", dove.display()))?;
-    Ok(())
+    w
+}
+
+/// Scrive gli stessi byte di [`wav_byte`] su un file.
+pub fn scrivi_wav(pcm: &Pcm, dove: &Path) -> Result<()> {
+    std::fs::write(dove, wav_byte(pcm))
+        .with_context(|| format!("scrittura di {}", dove.display()))
 }
 
 #[cfg(test)]

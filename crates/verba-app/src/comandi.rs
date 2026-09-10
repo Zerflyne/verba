@@ -284,7 +284,33 @@ pub fn termini_salva(elenco: Vec<String>, stato: State<'_, Stato>) -> Esito<Term
     })
 }
 
+/// Un errore avvenuto dentro la finestra, portato nel log dell'applicazione.
+///
+/// Un'eccezione JavaScript in una webview non lascia traccia da nessuna parte:
+/// senza gli strumenti di sviluppo aperti sparisce, e chi la subisce puo' solo
+/// riferire il messaggio a memoria. Farla arrivare qui costa una riga e
+/// trasforma «da' un errore» in una riga di log con lo stack.
+#[tauri::command]
+pub fn problema(messaggio: String, dettaglio: Option<String>) {
+    tracing::error!(
+        dettaglio = dettaglio.as_deref().unwrap_or("-"),
+        "errore nella finestra: {messaggio}"
+    );
+}
+
 // ------------------------------------------------------------------ il file
+
+/// Il file passato sulla riga di comando, se ce n'e' uno.
+///
+/// `verba-app un-file.mp3` apre la finestra gia' su quel file. E' quello che
+/// il sistema fa quando si sceglie «Apri con», ed e' anche l'unico modo di
+/// riprodurre un difetto dell'anteprima senza cliccare a mano.
+#[tauri::command]
+pub fn file_da_aprire() -> Option<String> {
+    std::env::args().nth(1).filter(|a| !a.starts_with('-') && PathBuf::from(a).is_file())
+}
+
+// ------------------------------------------------------------------ apertura
 
 #[tauri::command]
 pub async fn apri(percorso: String, app: AppHandle, stato: State<'_, Stato>) -> Esito<Descrizione> {
@@ -449,18 +475,22 @@ pub fn fotogramma(t: f64, stato: State<'_, Stato>) -> Esito<Response> {
     Ok(Response::new(pixel.to_vec()))
 }
 
-/// Il WAV temporaneo da dare all'elemento `<audio>` della finestra.
+/// Il WAV da dare all'elemento `<audio>` della finestra.
 ///
 /// Non si passa il file di partenza: la webview non sa suonare tutto quello
 /// che Verba sa aprire, e per un `.mkv` o un `.opus` resterebbe muta senza
 /// dire perche'. Il WAV viene dal PCM gia' decodificato, quindi si ascolta
 /// esattamente cio' su cui hanno lavorato i modelli.
+///
+/// Tornano i byte e non un percorso perche' WebKitGTK **rifiuta gli schemi
+/// personalizzati per i media**: un file servito su `asset://` fa fallire
+/// l'elemento con `MEDIA_ERR_SRC_NOT_SUPPORTED` prima ancora di provare a
+/// leggerlo. Come `blob:` invece si suona.
 #[tauri::command]
-pub fn traccia_audio(stato: State<'_, Stato>) -> Esito<String> {
-    let mut guardia = stato.sessione.lock().unwrap();
-    let s = guardia.as_mut().ok_or_else(|| "non c'e' nessun file aperto".to_string())?;
-    let percorso = s.traccia_audio().map_err(riga)?;
-    Ok(percorso.display().to_string())
+pub fn traccia_audio(stato: State<'_, Stato>) -> Esito<Response> {
+    let guardia = stato.sessione.lock().unwrap();
+    let s = guardia.as_ref().ok_or_else(|| "non c'e' nessun file aperto".to_string())?;
+    Ok(Response::new(s.traccia_audio()))
 }
 
 #[tauri::command]

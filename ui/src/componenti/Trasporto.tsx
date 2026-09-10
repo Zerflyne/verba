@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Pausa, Play } from "./icone";
 import { orologio } from "./controlli";
+import { riporta } from "../ponte";
 
 interface Props {
   tempo: number;
@@ -59,7 +60,10 @@ export function Trasporto({
     if (!a || !audio) return;
     if (inRiproduzione) {
       if (Math.abs(a.currentTime - tempo) > SALTO) a.currentTime = tempo;
-      void a.play().catch((e) => setErrore(String(e)));
+      void a.play().catch((e) => {
+        setErrore(`la riproduzione non e' partita: ${e}`);
+        riporta("play() rifiutata", e);
+      });
     } else {
       a.pause();
     }
@@ -132,11 +136,27 @@ export function Trasporto({
           src={audio}
           preload="auto"
           muted={muto}
-          onError={() =>
+          onError={(e) => {
             // Un audio che non parte e non dice niente e' il difetto piu'
-            // difficile da capire: qui almeno si legge che e' successo.
-            setErrore("la traccia d'anteprima non si e' caricata")
-          }
+            // difficile da capire. Il codice distingue i due casi che si
+            // riparano in posti diversi: 2 e 4 vogliono dire che l'indirizzo
+            // non e' arrivato o non e' stato accettato, 3 che e' arrivato e
+            // non si e' lasciato decodificare.
+            const m = (e.currentTarget as HTMLAudioElement).error;
+            const codici: Record<number, string> = {
+              1: "caricamento interrotto",
+              2: "l'indirizzo non si e' aperto",
+              3: "l'audio non si e' lasciato decodificare",
+              4: "formato o indirizzo non supportati",
+            };
+            const causa = m ? (codici[m.code] ?? `codice ${m.code}`) : "causa ignota";
+            setErrore(`la traccia d'anteprima non si e' caricata: ${causa}`);
+            riporta(`traccia d'anteprima non caricata: ${causa}`, {
+              codice: m?.code,
+              messaggio: m?.message,
+              indirizzo: (e.currentTarget as HTMLAudioElement).currentSrc,
+            });
+          }}
           onPlaying={() => setErrore(null)}
         />
       )}

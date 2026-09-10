@@ -267,6 +267,11 @@ function fase(nome: NomeFase, ms: number): Promise<void> {
  *  `?banco=carica&t=1.2` apre la sezione Carica con il file gia' trascritto e
  *  il cursore a 1,2 secondi. Serve a fare gli scatti per il README senza
  *  cliccare a mano, e vale **solo** senza Tauri. */
+/** Vero con `?audio=1`: il banco finge un file di solo audio. */
+export function soloAudioFinto(): boolean {
+  return new URLSearchParams(window.location.search).get("audio") === "1";
+}
+
 export function scenaIniziale(): { sezione: string; tempo: number } | null {
   const q = new URLSearchParams(window.location.search);
   const sezione = q.get("banco");
@@ -330,7 +335,20 @@ export async function bancoDiProva<T>(
       // Il banco non ha un file da suonare: `sorgenteAudio` non arriva
       // nemmeno qui, ma se ci arrivasse deve dirlo invece di mentire.
       throw new Error("il banco di prova non ha una traccia da riprodurre");
+    case "file_da_aprire":
+      return q(null);
     case "apri":
+      if (soloAudioFinto()) {
+        await fase("preparazione", 350);
+        return q({
+          ...DESCRIZIONE,
+          nome: "intervista.mp3",
+          modalita: "audio" as const,
+          larghezza: 0,
+          altezza: 0,
+          riassunto: "audio mp3 · 00:09",
+        });
+      }
       await fase("preparazione", 350);
       return q(DESCRIZIONE);
     case "chiudi":
@@ -363,7 +381,10 @@ export async function bancoDiProva<T>(
     case "applica_aspetto":
       return q(null);
     case "dimensioni":
-      return q([DESCRIZIONE.larghezza, DESCRIZIONE.altezza]);
+      // `?audio=1` finge un file di solo audio: la scena prende le misure del
+      // preset verticale invece di quelle del filmato. Serve a guardare
+      // l'anteprima in quel caso senza dover trascrivere un mp3 per davvero.
+      return q(soloAudioFinto() ? [1080, 1920] : [DESCRIZIONE.larghezza, DESCRIZIONE.altezza]);
     case "onda":
       return q(ONDA);
     case "parole":

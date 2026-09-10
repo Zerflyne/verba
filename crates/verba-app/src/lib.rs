@@ -42,6 +42,8 @@ pub fn avvia() {
             comandi::gpu_disponibili,
             comandi::termini,
             comandi::termini_salva,
+            comandi::problema,
+            comandi::file_da_aprire,
             comandi::apri,
             comandi::chiudi,
             comandi::descrizione,

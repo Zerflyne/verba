@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "predefinite",
-  "description": "I permessi che servono a Verba: aprire e salvare file, aprire la cartella di un export e leggere la traccia d'anteprima dalla cartella temporanea. Niente rete, niente shell.",
+  "description": "I permessi che servono a Verba: aprire e salvare file e aprire la cartella di un export. Niente rete, niente shell.",
   "windows": [
     "main"
   ],

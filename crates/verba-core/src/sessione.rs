@@ -95,8 +95,6 @@ pub struct Sessione {
     composto: Vec<u8>,
     avviso_carattere: Option<String>,
     riepilogo: Option<Riepilogo>,
-    /// Il WAV temporaneo che la finestra suona, scritto solo se lo si chiede.
-    traccia: Option<PathBuf>,
 }
 
 impl Sessione {
@@ -145,7 +143,6 @@ impl Sessione {
             composto: Vec::new(),
             avviso_carattere: None,
             riepilogo: None,
-            traccia: None,
         })
     }
 
@@ -153,30 +150,20 @@ impl Sessione {
         &self.percorso
     }
 
-    /// Un WAV temporaneo con l'audio del file, per la riproduzione.
+    /// L'audio del file come WAV, per la riproduzione nell'anteprima.
     ///
     /// La webview sa suonare un WAV sempre; di un `.mkv`, di un `.opus` o di un
     /// `.avi` non c'e' garanzia, perche' dipende dai codec installati sulla
     /// macchina. Passando dal PCM gia' decodificato la riproduzione funziona
     /// per ogni formato che Verba sa aprire — e per giunta si ascolta
-    /// esattamente l'audio su cui hanno lavorato i modelli, non una versione
-    /// diversa dello stesso file.
+    /// esattamente l'audio su cui hanno lavorato i modelli.
     ///
-    /// Il file viene scritto una volta sola e cancellato quando la sessione si
-    /// chiude.
-    pub fn traccia_audio(&mut self) -> Result<&Path> {
-        if self.traccia.is_none() {
-            let radice =
-                self.percorso.file_stem().and_then(|s| s.to_str()).unwrap_or("traccia");
-            // Il pid nel nome evita che due Verba aperti insieme si scrivano
-            // sopra a vicenda.
-            let nome = format!("verba-{}-{}.wav", std::process::id(), sanifica(radice));
-            let dove = std::env::temp_dir().join(nome);
-            audio::scrivi_wav(&self.pcm, &dove)?;
-            info!(file = %dove.display(), "traccia d'anteprima scritta");
-            self.traccia = Some(dove);
-        }
-        Ok(self.traccia.as_deref().expect("appena impostata"))
+    /// Sono byte e non un file perche' alla finestra devono arrivare come
+    /// `blob:`: WebKitGTK **rifiuta** gli schemi personalizzati per i media
+    /// (`MEDIA_ERR_SRC_NOT_SUPPORTED`), quindi un file servito su `asset://`
+    /// resterebbe muto. Non vengono conservati: chi li chiede se li tiene.
+    pub fn traccia_audio(&self) -> Vec<u8> {
+        audio::wav_byte(&self.pcm)
     }
 
     pub fn informazioni(&self) -> &Informazioni {
@@ -488,27 +475,6 @@ impl Sessione {
 /// Si prende il picco e non la media: una forma d'onda fatta di medie e'
 /// piatta e non dice piu' dove si parla, che e' l'unica cosa per cui la si
 /// guarda.
-impl Drop for Sessione {
-    fn drop(&mut self) {
-        // Il WAV d'anteprima e' roba nostra e sta nella cartella temporanea:
-        // se lo lasciassimo li', dopo qualche file aperto sarebbero gigabyte
-        // che nessuno sa di avere.
-        if let Some(t) = &self.traccia {
-            if let Err(e) = std::fs::remove_file(t) {
-                tracing::debug!(file = %t.display(), errore = %e, "traccia temporanea non rimossa");
-            }
-        }
-    }
-}
-
-/// Riduce un nome di file a qualcosa che stia tranquillo in un percorso.
-fn sanifica(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .take(40)
-        .collect()
-}
-
 pub fn forma_onda(pcm: &Pcm, colonne: usize) -> Vec<f32> {
     if pcm.samples.is_empty() || colonne == 0 {
         return Vec::new();

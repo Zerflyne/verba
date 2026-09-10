@@ -105,6 +105,29 @@ export const termini = () => chiama<TerminiVisti>("termini");
 export const terminiSalva = (elenco: string[]) =>
   chiama<TerminiVisti>("termini_salva", { elenco });
 
+/** Manda un errore della finestra al log dell'applicazione.
+ *
+ *  Un'eccezione qui dentro non lascia traccia da nessuna parte: senza gli
+ *  strumenti di sviluppo aperti sparisce, e resta solo «da' un errore». */
+export function riporta(messaggio: string, dettaglio?: unknown) {
+  const testo =
+    dettaglio instanceof Error
+      ? `${dettaglio.name}: ${dettaglio.message}\n${dettaglio.stack ?? ""}`
+      : dettaglio === undefined
+        ? undefined
+        : typeof dettaglio === "object" && dettaglio !== null
+          ? // `String({})` da' "[object Object]", che nel log non dice niente
+            JSON.stringify(dettaglio)
+          : String(dettaglio);
+  if (finto) {
+    console.error(messaggio, dettaglio);
+    return;
+  }
+  void chiama<void>("problema", { messaggio, dettaglio: testo }).catch(() => {});
+}
+
+/** Il file passato a `verba-app` sulla riga di comando, se ce n'e' uno. */
+export const fileDaAprire = () => chiama<string | null>("file_da_aprire");
 export const apri = (percorso: string) => chiama<Descrizione>("apri", { percorso });
 export const chiudi = () => chiama<void>("chiudi");
 export const trascrivi = () => chiama<Riepilogo>("trascrivi");
@@ -122,16 +145,22 @@ export const dimensioni = () => chiama<[number, number] | null>("dimensioni");
 
 /** L'indirizzo da dare a un `<audio>` per sentire il file aperto.
  *
- *  Il motore scrive un WAV temporaneo dal PCM gia' decodificato e ne
- *  restituisce il percorso; `convertFileSrc` lo trasforma in un indirizzo che
- *  la webview puo' caricare. Passare il file di partenza non funzionerebbe:
- *  di un `.mkv` o di un `.opus` la webview non ha detto di saper fare niente. */
+ *  Il motore restituisce un WAV costruito dal PCM gia' decodificato e qui
+ *  diventa un `blob:`. Non si passa ne' il file di partenza — di un `.mkv` o
+ *  di un `.opus` la webview non ha detto di saper fare niente — ne' un file
+ *  temporaneo su `asset://`: WebKitGTK rifiuta gli schemi personalizzati per i
+ *  media, e l'elemento fallisce con `MEDIA_ERR_SRC_NOT_SUPPORTED` senza
+ *  nemmeno provare a leggerlo.
+ *
+ *  Chi lo chiama deve revocare l'indirizzo precedente: il blob resta in
+ *  memoria finche' qualcuno lo tiene per mano. */
 export async function sorgenteAudio(): Promise<string | null> {
   if (finto) return null;
-  const percorso = await chiama<string>("traccia_audio");
-  const { convertFileSrc } = await import("@tauri-apps/api/core");
-  return convertFileSrc(percorso);
+  const { invoke } = await import("@tauri-apps/api/core");
+  const byte = await invoke<ArrayBuffer>("traccia_audio");
+  return URL.createObjectURL(new Blob([byte], { type: "audio/wav" }));
 }
+
 export const onda = () => chiama<number[]>("onda");
 export const parole = () => chiama<ParolaVista[]>("parole");
 export const finestra = (t: number, quante: number) =>
@@ -158,8 +187,34 @@ export const mostraNellaCartella = (percorso: string) =>
 export async function fotogramma(t: number, larghezza: number, altezza: number): Promise<ImageData> {
   if (finto) return fotogrammaFinto(t, larghezza, altezza);
   const { invoke } = await import("@tauri-apps/api/core");
-  const byte = await invoke<ArrayBuffer>("fotogramma", { t });
-  return new ImageData(new Uint8ClampedArray(byte), larghezza, altezza);
+
+  // Ogni passo dice il proprio nome: un \"NotSupportedError\" nudo non fa
+  // capire se ha ceduto il trasferimento dei byte o la loro conversione in
+  // immagine, e sono due difetti che si riparano in due posti diversi.
+  let byte: ArrayBuffer;
+  try {
+    byte = await invoke<ArrayBuffer>("fotogramma", { t });
+  } catch (e) {
+    riporta(`fotogramma(${t}): il motore non ha restituito i pixel`, e);
+    throw e;
+  }
+
+  const dati = new Uint8ClampedArray(byte);
+  const attesi = larghezza * altezza * 4;
+  if (dati.length !== attesi) {
+    const messaggio =
+      `fotogramma(${t}): ricevuti ${dati.length} byte, ne servivano ${attesi} ` +
+      `per ${larghezza}x${altezza}`;
+    riporta(messaggio);
+    throw new Error(messaggio);
+  }
+
+  try {
+    return new ImageData(dati, larghezza, altezza);
+  } catch (e) {
+    riporta(`fotogramma(${t}): ImageData ${larghezza}x${altezza} rifiutata`, e);
+    throw e;
+  }
 }
 
 export { presetFinti };

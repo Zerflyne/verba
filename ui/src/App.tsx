@@ -111,7 +111,13 @@ export default function App() {
         await carica("/esempio/video_tutorial.mp4");
         setTempo(scena.tempo);
         setSezione(scena.sezione as Sezione);
+        return;
       }
+
+      // `verba-app un-file.mp3` parte gia' su quel file: e' quello che passa
+      // il sistema quando si sceglie «Apri con».
+      const dallAvvio = await ponte.fileDaAprire();
+      if (dallAvvio) void carica(dallAvvio);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -177,7 +183,12 @@ export default function App() {
       setRiepilogo(null);
       setTempo(0);
       setInRiproduzione(false);
-      setAudio(null);
+      // Il blob della traccia precedente va revocato a mano: finche' resta un
+      // indirizzo valido, la webview tiene in memoria l'intero WAV.
+      setAudio((vecchio) => {
+        if (vecchio) URL.revokeObjectURL(vecchio);
+        return null;
+      });
       setElaborando(true);
       setFasi(
         FASI_TRASCRIZIONE.map((f) => ({
@@ -220,7 +231,12 @@ export default function App() {
           .then(setAudio)
           .catch(() => setAudio(null));
         setRiepilogo(r);
-        setParole(await ponte.parole());
+        const p = await ponte.parole();
+        setParole(p);
+        // Il cursore si mette sulla prima parola, non a zero: quasi nessun
+        // file comincia a parlare al primo fotogramma, e un'anteprima aperta
+        // su un istante muto e' indistinguibile da un'anteprima rotta.
+        if (p.length > 0) setTempo(p[0].inizio);
         setOnda(await ponte.onda());
         setDimensioni(await ponte.dimensioni());
         const corrente = await ponte.presetCorrente();
