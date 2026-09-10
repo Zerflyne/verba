@@ -12,14 +12,20 @@ precedente sia verificata.
 | `Righe massime: default 2` | Configurabile 1/2/3, **default 1** | Scelta dell'autore: piu' di una riga per volta rende il risultato caotico. Il controllo esiste, il default no. |
 | (non trattato) `ORT_DYLIB_PATH` | `libonnxruntime` impacchettata accanto all'eseguibile | Oggi la libreria e' risolta da una variabile d'ambiente. Un `.deb` o un `.exe` non puo' assumerla: senza questo, l'app non parte su nessuna macchina che non sia quella di sviluppo. |
 
+## Stato
+
+Fatte le fasi da 0 a 5, ognuna verificata prima della successiva: e' quanto la
+spec chiama "l'applicazione vera". Restano la riga di comando a sottocomandi,
+lo scaricamento dei modelli, l'applicazione Tauri e la distribuzione.
+
 ## Fasi
 
-### Fase 0 — Ristrutturazione, a comportamento invariato
+### ✅ Fase 0 — Ristrutturazione, a comportamento invariato
 Repository git; workspace Cargo con `verba-core`, `verba-cli`, `verba-app`;
 rinomina completa da AutoSubtitler a Verba. Nessun cambiamento funzionale.
 **Verifica**: gli stessi 79 test passano e la CLI produce lo stesso MOV di prima.
 
-### Fase 1 — Fondamenta per la 0.2
+### ✅ Fase 1 — Fondamenta per la 0.2
 Identificativo stabile per parola; la sequenza diventa struttura mutabile
 separata dal risultato grezzo del modello. Canale di eventi di avanzamento
 (fase, percentuale, tempo) al posto del solo logging. Modulo `project`: preset
@@ -27,7 +33,7 @@ in JSON e i tre di serie (Verticale, Orizzontale, Sobrio).
 **Verifica**: la CLI stampa l'avanzamento per fasi; un preset salvato e
 ricaricato riproduce lo stesso fotogramma.
 
-### Fase 2 — Ingresso video
+### ✅ Fase 2 — Ingresso video
 Demux e decodifica con libavformat/libavcodec (il `cpp/` e' gia' linkato):
 estrazione dell'audio dai container video, decodifica del fotogramma al tempo
 `t`, rilevamento della modalita' audio/video. Errore esplicito per i file senza
@@ -35,14 +41,14 @@ traccia audio.
 **Verifica**: trascrizione di un `.mp4` e di un `.mkv`; estrazione di un
 fotogramma a un tempo dato.
 
-### Fase 3 — Layout completo
+### ✅ Fase 3 — Layout completo
 Righe massime 1/2/3 con spezzatura bilanciata; larghezza massima, posizione
 verticale e orizzontale, allineamento, margine. Corpo in pixel riferiti
 all'altezza del sorgente, con la percentuale sul fotogramma. Maiuscole.
 **Verifica**: test di geometria per ogni combinazione; nessuna regressione sul
 caso a una riga.
 
-### Fase 4 — Render completo
+### ✅ Fase 4 — Render completo
 Forme dell'evidenziazione (rettangolo, sottolineatura, solo colore); colore del
 testo attivo; ombra; font di sistema e da `assets/fonts` con peso selezionabile
 e ricaduta annunciata se manca. API `disegna_fotogramma(t) -> RGBA`, **la stessa
@@ -50,7 +56,7 @@ usata dall'export**: l'anteprima non ha un percorso di codice proprio.
 **Verifica**: confronto pixel a pixel fra un fotogramma d'anteprima e lo stesso
 fotogramma estratto dall'export.
 
-### Fase 5 — Export
+### ✅ Fase 5 — Export
 H.264 CRF 18 yuv420p impresso (default video), ProRes 422 impresso, ProRes 4444
 overlay (gia' fatto), WebM VP9 con alpha; SRT (fatto), VTT, JSON (fatto), TXT.
 Avanzamento, annullamento reale e cancellazione del file parziale.
