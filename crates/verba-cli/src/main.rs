@@ -1,538 +1,206 @@
-//! AutoSubtitler — trascrizione audio con mappatura parola-per-parola e
-//! sottotitoli grafici su sfondo trasparente.
+//! Verba — sottotitoli automatici in locale, dalla riga di comando.
 //!
-//! Pipeline a fasi, con un solo modello alla volta residente sul dispositivo.
-//! La trascrizione non passa da un file intermedio: resta in RAM e alimenta
-//! direttamente l'impaginazione e il disegno.
+//! Tre comandi, uno per ciascuna cosa che si puo' volere:
 //!
 //! ```text
-//!   audio (qualsiasi formato) ──► audio.rs  ─► PCM mono 16 kHz normalizzato (RAM)
-//!                                     │
-//!                                     ├─► pyannote ONNX     ─► segmenti di parlato
-//!                                     │      (rilasciato)
-//!                                     ├─► Whisper large-v3  ─► testo per segmento
-//!                                     │      (SCARICATO dalla GPU)
-//!                                     ├─► wav2vec2 ONNX CTC ─► tempi per parola
-//!                                     │                            (in RAM)
-//!                                     ├─► layout.rs         ─► blocchi e righe
-//!                                     │                        (misura cosmic-text)
-//!                                     ├─► render.rs         ─► fotogrammi RGBA
-//!                                     └─► encoder.cpp       ─► MOV ProRes 4444
-//!                                                              con canale alfa
+//! verba trascrivi discorso.mp3 --out sottotitoli.srt --lingua it --termini glossario.csv
+//! verba rendi     filmato.mp4  --out filmato_sub.mp4 --preset orizzontale.json
+//! verba overlay   filmato.mp4  --out overlay.mov     --preset verticale.json
 //! ```
+//!
+//! Tutti e tre percorrono la stessa pipeline; cambia solo cosa ne esce.
+//!
+//! ```text
+//!   file (audio o video) ──► audio.rs  ─► PCM mono 16 kHz normalizzato (RAM)
+//!                                │
+//!                                ├─► pyannote ONNX     ─► segmenti di parlato
+//!                                │      (rilasciato)
+//!                                ├─► Whisper large-v3  ─► testo per segmento
+//!                                │      (SCARICATO dalla GPU)
+//!                                ├─► wav2vec2 ONNX CTC ─► tempi per parola
+//!                                ├─► pulizia.rs        ─► sequenza normalizzata
+//!                                ├─► layout.rs         ─► blocchi e righe
+//!                                │                        (misura cosmic-text)
+//!                                ├─► srt.rs            ─► trascrivi: .srt .vtt .json .txt
+//!                                └─► render.rs + encoder.cpp
+//!                                                      ─► rendi:   video impresso
+//!                                                         overlay: sfondo trasparente
+//! ```
+//!
+//! Niente file intermedi: la trascrizione resta in RAM e alimenta
+//! direttamente l'impaginazione e il disegno.
 
+mod aspetto;
 mod avanzamento;
+mod elenchi;
+mod opzioni;
+mod uscite;
 
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use verba_core::audio::{AudioInput, NormalizeMode, PreprocessConfig};
-use verba_core::caratteri::{self, Catalogo, Richiesta};
-use verba_core::encoder::FormatoVideo;
-use verba_core::eventi::Fase;
-use verba_core::layout::{Allineamento, Attivazione, LayoutConfig, Tipografo};
+use verba_core::audio::{AudioInput, NormalizeMode, PreprocessConfig, Pcm};
+use verba_core::eventi::{Fase, Progresso};
+use verba_core::layout::{Blocco, LayoutConfig};
 use verba_core::media::{Informazioni, Media};
 use verba_core::pipeline::{self, ConfigTrascrizione, PercorsiModelli};
-use verba_core::progetto::{self, FormatoPreset, Preset};
 use verba_core::prompt::{self, PromptConfig};
-use verba_core::render::{Colore, Evidenziazione, Rasterizzatore, Stile};
+use verba_core::render::Rasterizzatore;
 use verba_core::scena::Scena;
 use verba_core::segmentation::SegmentationConfig;
-use verba_core::srt::{SrtConfig, SrtMode};
+use verba_core::trascrizione::Parola;
 use verba_core::transcribe::WhisperConfig;
 use verba_core::video::{self, Sfondo, VideoConfig};
-use verba_core::{align, audio, gpu, layout, srt};
+use verba_core::{align, audio, gpu, layout};
+
+use aspetto::{DateAMano, Vincolo};
+use opzioni::{Aspetto, Codifica, Comuni, NormalizzaArg, UsciteTestuali};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "verba",
-    about = "Sottotitoli grafici a sfondo trasparente (ProRes 4444) da un file audio: Whisper large-v3 + pyannote (ONNX) + wav2vec2-italian (ONNX)",
-    version
+    about = "Sottotitoli automatici in locale: trascrizione parola per parola, \
+             sottotitoli di testo, video sottotitolato e overlay trasparente",
+    long_about = None,
+    version,
+    subcommand_required = true,
+    arg_required_else_help = true
 )]
 struct Cli {
-    /// Sorgenti audio: percorsi di qualsiasi formato, oppure `-` per stdin.
-    /// Piu' sorgenti vengono concatenate.
-    /// Non serve con le opzioni che si limitano a mostrare qualcosa
-    /// (`--caratteri`, `--solo-prompt`).
-    #[arg(num_args = 1..)]
-    input: Vec<String>,
+    #[command(subcommand)]
+    comando: Comando,
 
-    /// File video di uscita. L'estensione predefinita dipende dal formato
-    /// (default: <input>_overlay.mov oppure <input>_sub.mp4).
-    #[arg(short, long)]
-    output: Option<PathBuf>,
+    #[command(flatten)]
+    globali: Globali,
+}
 
-    /// Cosa produrre.
-    #[arg(long, value_enum, default_value_t = UscitaArg::Overlay)]
-    uscita: UscitaArg,
+/// Le opzioni che valgono per ogni comando e si possono scrivere ovunque.
+#[derive(Args, Debug, Clone)]
+struct Globali {
+    /// Scrive l'avanzamento in JSON su stderr, un oggetto per riga: e' la
+    /// forma da usare quando Verba sta dentro un altro script.
+    #[arg(long, global = true, conflicts_with = "progresso")]
+    json: bool,
 
-    /// Elenca i formati di uscita ed esce.
-    #[arg(long)]
-    formati: bool,
-
-    /// Esporta anche i sottotitoli in WebVTT.
-    #[arg(long, value_name = "FILE")]
-    vtt: Option<PathBuf>,
-
-    /// Esporta anche il solo testo, una battuta per riga.
-    #[arg(long, value_name = "FILE")]
-    txt: Option<PathBuf>,
-
-    /// Esporta anche i sottotitoli in formato SRT (uscita accessoria).
-    #[arg(long, value_name = "FILE")]
-    srt: Option<PathBuf>,
-
-    /// Struttura dell'SRT accessorio. `blocchi` ricalca esattamente cio' che
-    /// compare nel video; le altre modalita' derivano dalle sole parole.
-    #[arg(long, value_enum, default_value_t = SrtModeArg::Blocchi)]
-    srt_mode: SrtModeArg,
-
-    /// Caratteri massimi per battuta nelle modalita' `line` e `karaoke`.
-    #[arg(long, default_value_t = 84)]
-    srt_max_chars: usize,
-
-    /// Esporta anche la mappatura parola-per-parola in JSON.
-    #[arg(long)]
-    json: Option<PathBuf>,
-
-    // ---- preset ----
-    /// Carica l'aspetto dei sottotitoli da un preset. Le opzioni scritte a
-    /// mano hanno comunque la precedenza su cio' che il preset dice.
-    #[arg(long, value_name = "FILE")]
-    preset: Option<PathBuf>,
-
-    /// Parte da uno dei preset di serie invece che dai valori predefiniti.
-    #[arg(long, value_enum, conflicts_with = "preset")]
-    preset_di_serie: Option<PresetArg>,
-
-    /// Salva in un preset l'aspetto risultante da queste opzioni.
-    #[arg(long, value_name = "FILE")]
-    salva_preset: Option<PathBuf>,
-
-    /// Elenca i preset di serie ed esce.
-    #[arg(long)]
-    preset_disponibili: bool,
-
-    /// Come mostrare l'avanzamento delle fasi su stderr. `json` scrive un
-    /// oggetto per riga, ed e' la forma da usare quando Verba e' dentro un
-    /// altro script.
-    #[arg(long, value_enum, default_value_t = avanzamento::Formato::Testo)]
+    /// Come mostrare l'avanzamento delle fasi su stderr.
+    #[arg(long, global = true, value_enum, default_value_t = avanzamento::Formato::Testo,
+          value_name = "MODO")]
     progresso: avanzamento::Formato,
 
-    // ---- modelli ----
-    /// Modello Whisper large-v3 in formato GGML/GGUF (whisper.cpp).
-    #[arg(long, default_value = "models/ggml-large-v3.bin")]
-    whisper_model: PathBuf,
+    /// Verbosita' del log.
+    #[arg(short, long, global = true)]
+    verbose: bool,
+}
 
-    /// Modello di segmentazione pyannote esportato in ONNX.
-    #[arg(long, default_value = "models/pyannote-segmentation-3.0.onnx")]
-    segmentation_model: PathBuf,
+impl Globali {
+    fn formato_avanzamento(&self) -> avanzamento::Formato {
+        if self.json {
+            avanzamento::Formato::Json
+        } else {
+            self.progresso
+        }
+    }
+}
 
-    /// Modello wav2vec2-italian (testa CTC) esportato in ONNX.
-    #[arg(long, default_value = "models/wav2vec2-italian.onnx")]
-    align_model: PathBuf,
+#[derive(Subcommand, Debug)]
+enum Comando {
+    /// Trascrive e scrive i sottotitoli come file di testo.
+    ///
+    /// Il formato lo dice l'estensione di --out: .srt, .vtt, .json (parola per
+    /// parola) o .txt. Si puo' ripetere --out per averne piu' d'uno in una
+    /// passata sola.
+    Trascrivi(ArgomentiTesto),
 
-    /// Vocabolario del tokenizer wav2vec2 (vocab.json).
-    #[arg(long, default_value = "models/wav2vec2-italian.vocab.json")]
-    align_vocab: PathBuf,
+    /// Imprime i sottotitoli sul filmato di partenza.
+    ///
+    /// L'estensione di --out sceglie il codec: .mp4 per H.264 (si riproduce
+    /// ovunque), .mov per ProRes 422 HQ (senza perdita, per chi rimonta). La
+    /// traccia audio del sorgente viene ricopiata senza ricodifica.
+    Rendi(ArgomentiVideo),
 
-    // ---- dispositivo ----
-    /// VRAM totale minima (MiB) perche' una GPU sia usata. Il criterio e' la
-    /// memoria *totale*, non quella libera.
-    #[arg(long, default_value_t = gpu::DEFAULT_MIN_VRAM_MIB)]
-    min_vram_mib: u64,
+    /// Disegna i soli sottotitoli su sfondo trasparente, da sovrapporre in
+    /// montaggio.
+    ///
+    /// L'estensione di --out sceglie il codec: .mov per ProRes 4444, .webm
+    /// per VP9 con alfa (centinaia di volte piu' leggero, piu' lento da
+    /// produrre).
+    Overlay(ArgomentiVideo),
 
-    /// Forza un indice GPU specifico, saltando la selezione automatica.
-    #[arg(long)]
-    gpu_index: Option<u32>,
+    /// Elenca i caratteri disponibili con i loro pesi.
+    Caratteri(ArgomentiCaratteri),
 
-    /// Forza l'esecuzione su CPU.
-    #[arg(long)]
-    cpu: bool,
+    /// Elenca i preset di serie.
+    Preset,
 
-    /// Thread CPU per ONNX Runtime, whisper.cpp e l'encoder video.
-    #[arg(long)]
-    threads: Option<usize>,
+    /// Elenca i formati di uscita.
+    Formati,
+}
 
-    // ---- trascrizione ----
-    /// Lingua ISO-639-1 (`auto` per il rilevamento automatico).
-    #[arg(long, default_value = "it")]
-    language: String,
+#[derive(Args, Debug)]
+struct ArgomentiTesto {
+    /// Sorgenti: qualsiasi formato audio o video, `-` per stdin. Piu'
+    /// sorgenti vengono concatenate.
+    #[arg(num_args = 1.., required = true, value_name = "FILE")]
+    input: Vec<String>,
 
-    /// Ampiezza del beam search di Whisper.
-    #[arg(long, default_value_t = 5)]
-    beam_size: i32,
+    /// File da scrivere; l'estensione decide il formato. Ripetibile.
+    /// Senza --out si scrive un .srt accanto al sorgente.
+    #[arg(short, long, value_name = "FILE")]
+    out: Vec<PathBuf>,
 
-    /// Prompt iniziale libero, per orientare Whisper su stile e punteggiatura.
-    /// Viene anteposto ai termini letti dal CSV.
-    #[arg(long)]
-    prompt: Option<String>,
+    /// Struttura dei sottotitoli. `blocchi` ricalca esattamente le righe che
+    /// comparirebbero nel video; le altre derivano dalle sole parole.
+    #[arg(long, alias = "srt-mode", value_enum,
+          default_value_t = opzioni::SrtStrutturaArg::Blocchi)]
+    srt_struttura: opzioni::SrtStrutturaArg,
 
-    /// File CSV con le parole con cui inizializzare il modello (nomi propri,
-    /// sigle, termini tecnici). Delimitatore, intestazione e virgolette sono
-    /// riconosciuti automaticamente.
-    #[arg(long, value_name = "FILE")]
-    prompt_csv: Option<PathBuf>,
+    /// Caratteri massimi per battuta nelle strutture `riga` e `karaoke`.
+    #[arg(long, alias = "srt-max-chars", default_value_t = 84, value_name = "N")]
+    srt_caratteri_max: usize,
 
-    /// Colonna del CSV da leggere: nome dell'intestazione oppure indice base 0
-    /// (default: la prima colonna).
-    #[arg(long, value_name = "NOME|INDICE")]
-    prompt_column: Option<String>,
+    #[command(flatten)]
+    comuni: Comuni,
 
-    /// Forza il delimitatore del CSV invece di dedurlo (es. ";").
-    #[arg(long, value_name = "CARATTERE")]
-    prompt_delimiter: Option<char>,
+    #[command(flatten)]
+    aspetto: Aspetto,
+}
 
-    /// Testo introduttivo posto davanti all'elenco dei termini.
-    #[arg(long, value_name = "TESTO")]
-    prompt_preamble: Option<String>,
+#[derive(Args, Debug)]
+struct ArgomentiVideo {
+    /// Sorgenti: qualsiasi formato audio o video, `-` per stdin.
+    #[arg(num_args = 1.., required = true, value_name = "FILE")]
+    input: Vec<String>,
 
-    /// Lunghezza massima dell'initial prompt, in caratteri. Whisper accetta al
-    /// massimo ~224 token di contesto: oltre il limite i termini in eccesso
-    /// vengono scartati (a termine intero).
-    #[arg(long, default_value_t = prompt::DEFAULT_MAX_CHARS)]
-    prompt_max_chars: usize,
+    /// File video da scrivere; l'estensione decide il codec.
+    #[arg(short, long, value_name = "FILE")]
+    out: Option<PathBuf>,
 
-    /// Stampa l'initial prompt che verrebbe usato ed esce.
-    #[arg(long)]
-    solo_prompt: bool,
+    #[command(flatten)]
+    codifica: Codifica,
 
-    // ---- audio ----
-    /// Strategia di normalizzazione dell'ampiezza.
-    #[arg(long, value_enum, default_value_t = NormalizeArg::Rms)]
-    normalize: NormalizeArg,
+    #[command(flatten)]
+    testuali: UsciteTestuali,
 
-    /// Target RMS in dBFS per la normalizzazione.
-    #[arg(long, default_value_t = -20.0)]
-    target_dbfs: f32,
+    #[command(flatten)]
+    comuni: Comuni,
 
-    /// Disattiva il fallback su ffmpeg per i formati non gestiti da Symphonia.
-    #[arg(long)]
-    no_ffmpeg_fallback: bool,
+    #[command(flatten)]
+    aspetto: Aspetto,
+}
 
-    // ---- segmentazione ----
-    /// Soglia di attivazione del parlato.
-    #[arg(long, default_value_t = 0.50)]
-    onset: f32,
-
-    /// Soglia di disattivazione del parlato (isteresi).
-    #[arg(long, default_value_t = 0.60)]
-    offset: f32,
-
-    /// Salta pyannote e usa finestre uniformi di N secondi.
-    #[arg(long)]
-    no_segmentation: bool,
-
-    // ---- formato del video ----
-    /// Proporzioni del fotogramma. Con un file video il predefinito e'
-    /// `dal-sorgente`; con un file audio, che non ha proporzioni, e' `9:16`.
-    #[arg(long, value_enum, default_value_t = FormatoArg::DalSorgente)]
-    formato: FormatoArg,
-
-    /// Risoluzione esplicita `LARGHEZZAxALTEZZA` (sovrascrive --formato).
-    #[arg(long, value_name = "LxA")]
-    risoluzione: Option<String>,
-
-    /// Frame rate: intero (`30`), decimale (`29.97`) o frazione (`30000/1001`).
-    #[arg(long, default_value = "30")]
-    fps: String,
-
-    /// Durata del video in secondi (default: durata dell'audio).
-    #[arg(long, value_name = "SECONDI")]
-    durata: Option<f64>,
-
-    /// Quantizzatore ProRes: piu' basso = piu' qualita' e file piu' grande.
-    #[arg(long, default_value_t = 4)]
-    qualita: u32,
-
-    // ---- tipografia e impaginazione ----
-    /// Famiglia del carattere. Usa --caratteri per vedere quali ci sono.
-    #[arg(long, default_value = caratteri::FAMIGLIA_PREDEFINITA)]
-    carattere: String,
-
-    /// Peso del carattere, da 100 a 900. Se la famiglia non ha quel peso viene
-    /// usato il piu' vicino, e lo si dice.
-    #[arg(long, default_value_t = caratteri::PESO_PREDEFINITO)]
-    peso: u16,
-
-    /// Un file `.ttf` o `.otf` da usare, senza doverlo installare. Ha la
-    /// precedenza su --carattere.
-    #[arg(long, value_name = "FILE")]
-    font: Option<PathBuf>,
-
+#[derive(Args, Debug)]
+struct ArgomentiCaratteri {
     /// Cartella con altri caratteri da aggiungere all'elenco. Ripetibile.
     #[arg(long, value_name = "CARTELLA")]
     cartella_caratteri: Vec<PathBuf>,
 
-    /// Cerca anche fra i caratteri installati sul sistema, oltre a quelli di
-    /// serie.
+    /// Elenca anche i caratteri installati sul sistema.
     #[arg(long)]
     caratteri_di_sistema: bool,
-
-    /// Elenca i caratteri disponibili con i loro pesi ed esce.
-    #[arg(long)]
-    caratteri: bool,
-
-    /// Corpo del font in pixel (default: 6,5 % del lato minore del fotogramma).
-    #[arg(long, value_name = "PIXEL")]
-    dimensione_font: Option<f32>,
-
-    /// Distanza minima dai bordi del fotogramma, in frazione della dimensione
-    /// corrispondente. E' un limite invalicabile: nessuna posizione fa uscire
-    /// il testo di qui.
-    #[arg(long, default_value_t = 0.05)]
-    margine: f32,
-
-    /// Larghezza della colonna di testo, in frazione della larghezza del
-    /// fotogramma.
-    #[arg(long, default_value_t = 0.80)]
-    larghezza_massima: f32,
-
-    /// Centro verticale del blocco, in frazione dell'altezza: 0 in alto,
-    /// 1 in basso.
-    #[arg(long, default_value_t = 0.82)]
-    posizione_verticale: f32,
-
-    /// Centro orizzontale della colonna, in frazione della larghezza.
-    #[arg(long, default_value_t = 0.50)]
-    posizione_orizzontale: f32,
-
-    /// Posizione verticale per nome, comoda al posto di
-    /// --posizione-verticale: alto = 18 %, centro = 50 %, basso = 82 %.
-    #[arg(long, value_enum)]
-    posizione: Option<PosizioneArg>,
-
-    /// Righe che possono comparire insieme, da 1 a 3. Il valore predefinito e'
-    /// una sola: piu' righe per volta rendono la lettura caotica.
-    #[arg(long, default_value_t = 1)]
-    righe_massime: usize,
-
-    /// Allineamento delle righe dentro la colonna.
-    #[arg(long, value_enum, default_value_t = AllineamentoArg::Centro)]
-    allineamento: AllineamentoArg,
-
-    /// Disegna il testo in maiuscolo.
-    #[arg(long)]
-    maiuscole: bool,
-
-    /// Interlinea come multiplo del corpo. Con una riga sola determina
-    /// l'altezza della fascia su cui il rettangolo viene centrato.
-    #[arg(long, default_value_t = 1.18)]
-    interlinea: f32,
-
-    /// Durata massima di una riga, in secondi.
-    #[arg(long, default_value_t = 5.0)]
-    durata_blocco: f64,
-
-    /// Una pausa piu' lunga di questo valore chiude la riga.
-    #[arg(long, default_value_t = 0.7)]
-    pausa_blocco: f64,
-
-    /// Permanenza della riga dopo l'ultima parola, in secondi.
-    #[arg(long, default_value_t = 0.30)]
-    tenuta: f64,
-
-    // ---- accensione dell'evidenziazione ----
-    /// Quanto il rettangolo arriva prima dell'inizio nominale della parola.
-    #[arg(long, default_value_t = 0.06, value_name = "SECONDI")]
-    anticipo: f64,
-
-    /// Tetto alla permanenza del rettangolo nella pausa che segue la parola:
-    /// oltre questo silenzio il rettangolo si spegne e resta la sola riga.
-    #[arg(long, default_value_t = 0.60, value_name = "SECONDI")]
-    pausa_massima: f64,
-
-    /// Permanenza del rettangolo dopo l'ultima parola della riga. Non puo'
-    /// superare `--tenuta`, oltre la quale la riga sparisce.
-    #[arg(long, default_value_t = 0.40, value_name = "SECONDI")]
-    coda: f64,
-
-    /// Durata minima attribuita a una parola: sotto questa soglia
-    /// l'evidenziazione lampeggerebbe.
-    #[arg(long, default_value_t = verba_core::pulizia::DURATA_MINIMA_PAROLA, value_name = "SECONDI")]
-    durata_minima_parola: f64,
-
-    // ---- stile ----
-    /// Colore del testo, `#RRGGBB` o `#RRGGBBAA`.
-    #[arg(long, default_value = "#FFFFFF")]
-    colore: String,
-
-    /// Colore del testo della parola in corso. Con la forma a rettangolo di
-    /// norma coincide con --colore: a indicare la parola e' il rettangolo
-    /// dietro, non un cambio di colore.
-    #[arg(long, default_value = "#FFFFFF")]
-    colore_attivo: String,
-
-    /// Forma con cui si segnala la parola in corso.
-    #[arg(long, value_enum, default_value_t = EvidenziazioneArg::Rettangolo)]
-    evidenziazione: EvidenziazioneArg,
-
-    /// Colore della forma che segnala la parola in corso.
-    #[arg(long, default_value = "#7C3AED")]
-    colore_evidenziazione: String,
-
-    /// Margine orizzontale del rettangolo oltre la parola, in frazione del corpo.
-    #[arg(long, default_value_t = 0.18)]
-    padding_evidenziazione: f32,
-
-    /// Altezza del rettangolo, in frazione del corpo.
-    #[arg(long, default_value_t = 1.12)]
-    altezza_evidenziazione: f32,
-
-    /// Raggio degli angoli del rettangolo, in frazione del corpo.
-    #[arg(long, default_value_t = 0.20)]
-    raggio_evidenziazione: f32,
-
-    /// Spessore della sottolineatura, in frazione del corpo.
-    #[arg(long, default_value_t = 0.10)]
-    spessore_sottolineatura: f32,
-
-    /// Colore del contorno del testo.
-    #[arg(long, default_value = "#000000")]
-    colore_bordo: String,
-
-    /// Spessore del contorno del testo in pixel (0 = nessun contorno).
-    #[arg(long, default_value_t = 0.0)]
-    bordo: f32,
-
-    /// Non segnalare in alcun modo la parola in corso. Equivale a
-    /// --evidenziazione nessuna.
-    #[arg(long)]
-    senza_evidenziazione: bool,
-
-    /// Non disegnare l'ombra sotto il testo. L'ombra e' accesa di default
-    /// perche' tiene i sottotitoli leggibili anche sopra un'immagine chiara.
-    #[arg(long)]
-    senza_ombra: bool,
-
-    /// Colore dell'ombra.
-    #[arg(long, default_value = "#000000A0")]
-    colore_ombra: String,
-
-    /// Spostamento dell'ombra verso il basso, in frazione del corpo.
-    #[arg(long, default_value_t = 0.05)]
-    ombra_spostamento: f32,
-
-    /// Sfocatura dell'ombra, in frazione del corpo.
-    #[arg(long, default_value_t = 0.08)]
-    ombra_sfocatura: f32,
-
-    // ---- diagnostica ----
-    /// Esegue solo la pre-elaborazione audio e stampa le statistiche
-    /// (utile per verificare decodifica, downmix e normalizzazione senza
-    /// caricare alcun modello).
-    #[arg(long)]
-    solo_audio: bool,
-
-    /// Verbosita' del log.
-    #[arg(short, long)]
-    verbose: bool,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum NormalizeArg {
-    None,
-    Peak,
-    Rms,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum SrtModeArg {
-    Blocchi,
-    Parola,
-    Riga,
-    Karaoke,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum FormatoArg {
-    /// 9:16 verticale, 1080x1920.
-    #[value(name = "9:16", alias = "verticale")]
-    Verticale,
-    /// 16:9 orizzontale, 1920x1080.
-    #[value(name = "16:9", alias = "orizzontale")]
-    Orizzontale,
-    /// Le proporzioni del file di partenza, se e' un video.
-    #[value(name = "dal-sorgente")]
-    DalSorgente,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum PosizioneArg {
-    Alto,
-    Centro,
-    Basso,
-}
-
-impl PosizioneArg {
-    /// La frazione di altezza su cui centrare il blocco.
-    fn frazione(self) -> f32 {
-        match self {
-            PosizioneArg::Alto => 0.18,
-            PosizioneArg::Centro => 0.50,
-            PosizioneArg::Basso => 0.82,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum UscitaArg {
-    /// MOV ProRes 4444: solo i sottotitoli su sfondo trasparente.
-    Overlay,
-    /// WebM VP9 con alfa: come l'overlay, centinaia di volte piu' leggero e
-    /// piu' lento da produrre.
-    OverlayWebm,
-    /// MP4 H.264: i sottotitoli impressi sul filmato di partenza.
-    Video,
-    /// MOV ProRes 422 HQ: i sottotitoli impressi, senza perdita.
-    VideoProres,
-}
-
-impl UscitaArg {
-    fn formato(self) -> FormatoVideo {
-        match self {
-            UscitaArg::Overlay => FormatoVideo::Prores4444,
-            UscitaArg::OverlayWebm => FormatoVideo::Vp9Alpha,
-            UscitaArg::Video => FormatoVideo::H264,
-            UscitaArg::VideoProres => FormatoVideo::Prores422,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum PresetArg {
-    Verticale,
-    Orizzontale,
-    Sobrio,
-}
-
-impl PresetArg {
-    fn preset(self) -> Preset {
-        match self {
-            PresetArg::Verticale => progetto::verticale(),
-            PresetArg::Orizzontale => progetto::orizzontale(),
-            PresetArg::Sobrio => progetto::sobrio(),
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum EvidenziazioneArg {
-    Rettangolo,
-    Sottolineatura,
-    SoloColore,
-    Nessuna,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum AllineamentoArg {
-    Sinistra,
-    Centro,
-    Destra,
 }
 
 fn main() -> Result<()> {
@@ -542,236 +210,379 @@ fn main() -> Result<()> {
     // sovrascritto dai valori di clap.
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).map_err(|e| e.exit()).unwrap();
-    let date = DateAMano(matches);
+    let sub = matches.subcommand().map(|(_, m)| m.clone()).unwrap_or_default();
+    let date = DateAMano(sub);
 
-    let default_level = if cli.verbose { "debug" } else { "info" };
+    let livello = if cli.globali.verbose { "debug" } else { "info" };
+    // Il log va su stderr insieme all'avanzamento: su stdout resta solo cio'
+    // che il comando ha il compito di stampare, cosi' `verba ... > file` e le
+    // pipe funzionano come ci si aspetta.
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(format!("verba={default_level},verba_core={default_level},warn"))),
-        )
+        .with_writer(std::io::stderr)
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            EnvFilter::new(format!("verba={livello},verba_core={livello},warn"))
+        }))
         .with_target(false)
         .init();
 
-    // Il motore emette eventi; qui si decide che aspetto prendono.
-    let progresso = avanzamento::progresso(cli.progresso);
+    match cli.comando {
+        Comando::Caratteri(a) => {
+            elenchi::caratteri(&a.cartella_caratteri, a.caratteri_di_sistema);
+            Ok(())
+        }
+        Comando::Preset => {
+            elenchi::preset();
+            Ok(())
+        }
+        Comando::Formati => {
+            elenchi::formati();
+            Ok(())
+        }
+        Comando::Trascrivi(a) => trascrivi(a, &date, &cli.globali),
+        Comando::Rendi(a) => video(a, &date, &cli.globali, Uso::Rendi),
+        Comando::Overlay(a) => video(a, &date, &cli.globali, Uso::Overlay),
+    }
+}
 
-    // Ctrl-C non uccide il processo: chiede alla pipeline di fermarsi al primo
-    // punto utile, cosi' il file video parziale viene cancellato invece di
-    // restare li' a sembrare un export riuscito.
+/// Cosa si sta producendo. E' l'unica differenza fra `rendi` e `overlay`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Uso {
+    Rendi,
+    Overlay,
+}
+
+impl Uso {
+    fn alfa(self) -> bool {
+        self == Uso::Overlay
+    }
+
+    fn suffisso(self) -> &'static str {
+        match self {
+            Uso::Rendi => "_sub",
+            Uso::Overlay => "_overlay",
+        }
+    }
+
+    /// L'estensione proposta quando --out non c'e'.
+    fn estensione(self) -> &'static str {
+        match self {
+            Uso::Rendi => "mp4",
+            Uso::Overlay => "mov",
+        }
+    }
+
+    fn estensioni_ammesse(self) -> &'static str {
+        match self {
+            Uso::Rendi => ".mp4 (H.264) o .mov (ProRes 422 HQ)",
+            Uso::Overlay => ".mov (ProRes 4444) o .webm (VP9 con alfa)",
+        }
+    }
+}
+
+// --------------------------------------------------------------- trascrivi
+
+fn trascrivi(a: ArgomentiTesto, date: &DateAMano, globali: &Globali) -> Result<()> {
+    let richieste = uscite::richieste(&a.out, &a.input[0])?;
+    let sorgente = apri_sorgente(&a.input)?;
+    let progresso = canale(globali);
+    let Some(elab) =
+        elabora(&a.input, sorgente.as_ref(), &a.comuni, &a.aspetto, date, None, &progresso)?
+    else {
+        return Ok(());
+    };
+
+    let struttura = uscite::Struttura {
+        struttura: a.srt_struttura,
+        caratteri_max: a.srt_caratteri_max,
+    };
+    for (percorso, formato) in &richieste {
+        uscite::scrivi(percorso, *formato, &elab.blocchi, &elab.parole, &struttura)?;
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------ rendi/overlay
+
+fn video(a: ArgomentiVideo, date: &DateAMano, globali: &Globali, uso: Uso) -> Result<()> {
+    // Il file di uscita si decide prima di trascrivere: un'estensione
+    // sbagliata non deve emergere dopo mezz'ora di lavoro.
+    let out = match &a.out {
+        Some(p) => p.clone(),
+        None => uscite::accanto(&a.input[0], uso.suffisso(), uso.estensione()),
+    };
+    let formato = opzioni::formato_da_estensione(&out, uso.alfa()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "«{}»: estensione non adatta a `verba {}`. Estensioni ammesse: {}.",
+            out.display(),
+            if uso.alfa() { "overlay" } else { "rendi" },
+            uso.estensioni_ammesse()
+        )
+    })?;
+
+    // Anche il filmato di partenza si controlla adesso: chiedere di imprimere
+    // i sottotitoli su un file audio e' un errore che deve costare un
+    // secondo, non una trascrizione intera.
+    let sorgente = apri_sorgente(&a.input)?;
+    if uso == Uso::Rendi && !sorgente.as_ref().is_some_and(|i| i.e_video()) {
+        bail!(
+            "`verba rendi` imprime i sottotitoli sul filmato, e «{}» non e' un file video. \
+             Da un file audio si puo' produrre solo un overlay: usa `verba overlay`.",
+            a.input[0]
+        );
+    }
+
+    let progresso = canale(globali);
+    let Some(elab) =
+        elabora(&a.input, sorgente.as_ref(), &a.comuni, &a.aspetto, date, Some(uso), &progresso)?
+    else {
+        return Ok(());
+    };
+
+    // Il frame rate viene dal file, se non e' stato chiesto a mano: un
+    // overlay con un frame rate diverso da quello del filmato si sfalsa a
+    // poco a poco.
+    let (fps_num, fps_den) = if date.ha("fps") {
+        aspetto::analizza_fps(&a.codifica.fps)?
+    } else {
+        match sorgente.as_ref().filter(|i| i.e_video() && i.fps_num > 0) {
+            Some(i) => (i.fps_num, i.fps_den.max(1)),
+            None => aspetto::analizza_fps(&a.codifica.fps)?,
+        }
+    };
+
+    let thread = elab.thread;
+    let vcfg = VideoConfig {
+        formato,
+        fps_num,
+        fps_den,
+        qualita: a.codifica.qualita,
+        thread,
+        durata: a.codifica.durata.unwrap_or(elab.durata_audio),
+    };
+
+    // I formati che imprimono i sottotitoli hanno bisogno del filmato sotto.
+    let mut filmato = if formato.ha_alfa() {
+        None
+    } else {
+        let percorso = PathBuf::from(&a.input[0]);
+        Some((Media::apri(&percorso)?, percorso))
+    };
+
+    info!(
+        file = %out.display(),
+        formato = %formato.etichetta(),
+        risoluzione = format!("{}x{}", elab.layout.larghezza, elab.layout.altezza),
+        fps = format!("{fps_num}/{fps_den}"),
+        durata = format!("{:.2} s", vcfg.durata),
+        "codifica"
+    );
+
+    let mut scena = Scena::nuova(elab.blocchi, elab.rasterizzatore);
+    let stat = {
+        let _c = progresso.inizia(Fase::Codifica);
+        let sfondo = match &mut filmato {
+            Some((media, percorso)) => Sfondo::Filmato { media, percorso },
+            None => Sfondo::Trasparente,
+        };
+        video::esporta(&mut scena, sfondo, &vcfg, &out, &progresso)?
+    };
+    info!(
+        file = %out.display(),
+        fotogrammi = stat.fotogrammi,
+        disegnati = stat.fotogrammi_disegnati,
+        secondi = format!("{:.2}", stat.secondi),
+        "video scritto"
+    );
+
+    // Uscite accessorie, solo se richieste esplicitamente.
+    let struttura = uscite::Struttura {
+        struttura: a.testuali.srt_struttura,
+        caratteri_max: a.testuali.srt_caratteri_max,
+    };
+    for (percorso, formato) in [
+        (&a.testuali.srt, uscite::FormatoTesto::Srt),
+        (&a.testuali.vtt, uscite::FormatoTesto::Vtt),
+        (&a.testuali.txt, uscite::FormatoTesto::Txt),
+        (&a.testuali.mappa, uscite::FormatoTesto::Json),
+    ] {
+        if let Some(p) = percorso {
+            uscite::scrivi(p, formato, scena.blocchi(), &elab.parole, &struttura)?;
+        }
+    }
+
+    gpu::log_vram(&elab.device, "finale");
+    Ok(())
+}
+
+// ------------------------------------------------------------- la pipeline
+
+/// Tutto cio' che serve dopo la trascrizione, per qualunque comando.
+struct Elaborato {
+    blocchi: Vec<Blocco>,
+    rasterizzatore: Rasterizzatore,
+    parole: Vec<Parola>,
+    durata_audio: f64,
+    layout: LayoutConfig,
+    device: gpu::Device,
+    thread: usize,
+}
+
+/// Il canale di avanzamento, con Ctrl-C gia' collegato.
+///
+/// Ctrl-C non uccide il processo: chiede alla pipeline di fermarsi al primo
+/// punto utile, cosi' il file video parziale viene cancellato invece di
+/// restare li' a sembrare un export riuscito.
+fn canale(globali: &Globali) -> Progresso {
+    let progresso = avanzamento::progresso(globali.formato_avanzamento());
     let interruttore = progresso.interruttore();
     if let Err(e) = ctrlc::set_handler(move || interruttore.annulla()) {
         warn!(errore = %e, "Ctrl-C non intercettato: l'interruzione sara' brusca");
     }
+    progresso
+}
 
-    let threads = cli
-        .threads
+/// Dal file alle righe impaginate.
+///
+/// Ritorna `None` quando un'opzione diagnostica ha gia' detto tutto quello che
+/// c'era da dire (`--solo-prompt`, `--solo-audio`) e non c'e' altro da fare.
+fn elabora(
+    input: &[String],
+    sorgente: Option<&Informazioni>,
+    comuni: &Comuni,
+    asp: &Aspetto,
+    date: &DateAMano,
+    uso: Option<Uso>,
+    progresso: &Progresso,
+) -> Result<Option<Elaborato>> {
+    let thread = comuni
+        .thread
         .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
         .clamp(1, 32);
 
     // Initial prompt: costruito per primo, cosi' un CSV malformato viene
     // segnalato prima di spendere tempo su decodifica e modelli.
-    let prompt_cfg = PromptConfig {
-        csv: cli.prompt_csv.clone(),
-        column: cli.prompt_column.clone(),
-        delimiter: cli.prompt_delimiter,
-        preamble: cli.prompt_preamble.clone(),
-        free_text: cli.prompt.clone(),
-        max_chars: cli.prompt_max_chars,
-    };
-    let initial_prompt = prompt::build(&prompt_cfg)?;
-
-    if cli.caratteri {
-        elenca_caratteri(&cli);
-        return Ok(());
-    }
-
-    if cli.formati {
-        println!("Formati di uscita:\n");
-        for f in FormatoVideo::TUTTI {
-            let nome = match f {
-                FormatoVideo::Prores4444 => "overlay",
-                FormatoVideo::Vp9Alpha => "overlay-webm",
-                FormatoVideo::H264 => "video",
-                FormatoVideo::Prores422 => "video-prores",
-            };
-            println!("  {:<14} .{:<5} {}", nome, f.estensione(), f.etichetta());
-            println!("  {:<21} {}\n", "", f.descrizione());
-        }
-        println!("I due «video» imprimono i sottotitoli sul filmato e richiedono un file video");
-        println!("di partenza; da un file audio si puo' produrre solo un overlay.");
-        return Ok(());
-    }
-
-    if cli.preset_disponibili {
-        println!("Preset di serie:\n");
-        for p in progetto::di_serie() {
-            println!("  {:<14} {}", p.nome.to_lowercase(), descrivi_preset(&p));
-        }
-        println!("\nSi usano con --preset-di-serie NOME, oppure si salva il proprio con");
-        println!("--salva-preset FILE e lo si ricarica con --preset FILE.");
-        return Ok(());
-    }
-
-    if cli.solo_prompt {
+    let initial_prompt = prompt::build(&PromptConfig {
+        csv: comuni.termini.clone(),
+        column: comuni.termini_colonna.clone(),
+        delimiter: comuni.termini_delimitatore,
+        preamble: comuni.termini_preambolo.clone(),
+        free_text: comuni.prompt.clone(),
+        max_chars: comuni.prompt_max_caratteri,
+    })?;
+    if comuni.solo_prompt {
         match &initial_prompt {
             Some(p) => println!("{p}"),
             None => println!("(nessun initial prompt configurato)"),
         }
-        return Ok(());
+        return Ok(None);
     }
 
-    if cli.input.is_empty() {
-        bail!("serve almeno un file da trascrivere (oppure `-` per leggere da stdin)");
-    }
+    // La libreria di ONNX Runtime va trovata adesso: dopo verrebbe fuori a
+    // decodifica finita, ed e' l'unico prerequisito che non e' dentro
+    // l'eseguibile.
+    verba_core::onnx::assicura_libreria()?;
 
     // Le impostazioni grafiche vengono validate subito: un colore scritto male
     // non deve emergere dopo mezz'ora di trascrizione.
-    // Come e' fatto il file: e' cio' che decide se ci sono proporzioni da
-    // rispettare, e se c'e' una traccia audio da trascrivere.
-    let sorgente = apri_sorgente(&cli)?;
-    if let Some(info) = &sorgente {
-        info!(
-            file = %cli.input[0],
-            modalita = ?info.modalita,
-            descrizione = %info.descrizione(),
-            "file di partenza"
-        );
-    }
-    let risoluzione_sorgente = sorgente.as_ref().and_then(|i| i.risoluzione());
-
-    let base = preset_di_partenza(&cli)?;
+    let base = aspetto::preset_di_partenza(asp)?;
     if let Some(b) = &base {
         info!(preset = %b.nome, "aspetto caricato da preset");
     }
-    let layout_cfg = configura_layout(&cli, &date, base.as_ref(), risoluzione_sorgente)?;
-    let stile = configura_stile(&cli, &date, base.as_ref())?;
-    // Con un video il frame rate e la durata vengono dal file, se non sono
-    // stati chiesti a mano: un overlay con un frame rate diverso da quello del
-    // filmato si sfalsa a poco a poco.
-    let (fps_num, fps_den) = if date.ha("fps") {
-        analizza_fps(&cli.fps)?
-    } else {
-        match sorgente.as_ref().filter(|i| i.e_video() && i.fps_num > 0) {
-            Some(i) => (i.fps_num, i.fps_den.max(1)),
-            None => analizza_fps(&cli.fps)?,
-        }
+    // Chi imprime i sottotitoli sul filmato non sceglie le proporzioni: le
+    // riceve. Chi ci fa un overlay sopra puo' sceglierle, ma se non
+    // coincidono e' meglio saperlo.
+    let vincolo = match (uso, sorgente.and_then(|i| i.risoluzione())) {
+        (Some(Uso::Rendi), Some((l, h))) => Vincolo::Impresso(l, h),
+        (Some(Uso::Overlay), Some((l, h))) => Vincolo::Sovrapposto(l, h),
+        _ => Vincolo::Libero,
     };
+    let layout_cfg = aspetto::configura_layout(
+        asp,
+        date,
+        base.as_ref(),
+        sorgente.and_then(|i| i.risoluzione()),
+        &vincolo,
+    )?;
+    let stile = aspetto::configura_stile(asp, date, base.as_ref())?;
 
     // ---------------------------------------------------------------- fase 0
     // Pre-elaborazione audio: tutto in RAM, nessun file temporaneo.
-    let inputs: Vec<AudioInput> = cli.input.iter().map(|a| AudioInput::from_cli_arg(a)).collect();
-    let pre_cfg = PreprocessConfig {
-        normalize: match cli.normalize {
-            NormalizeArg::None => NormalizeMode::None,
-            NormalizeArg::Peak => NormalizeMode::Peak,
-            NormalizeArg::Rms => NormalizeMode::Rms,
-        },
-        target_dbfs: cli.target_dbfs,
-        ffmpeg_fallback: !cli.no_ffmpeg_fallback,
-        ..Default::default()
-    };
     let pcm = {
         let _c = progresso.inizia(Fase::Preparazione);
-        audio::load_and_preprocess(&inputs, &pre_cfg)?
+        let inputs: Vec<AudioInput> = input.iter().map(|a| AudioInput::from_cli_arg(a)).collect();
+        audio::load_and_preprocess(
+            &inputs,
+            &PreprocessConfig {
+                normalize: match comuni.normalizza {
+                    NormalizzaArg::Niente => NormalizeMode::None,
+                    NormalizzaArg::Picco => NormalizeMode::Peak,
+                    NormalizzaArg::Rms => NormalizeMode::Rms,
+                },
+                target_dbfs: comuni.dbfs_obiettivo,
+                ffmpeg_fallback: !comuni.senza_ffmpeg,
+                ..Default::default()
+            },
+        )?
     };
-
-    if cli.solo_audio {
-        let peak = pcm.samples.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
-        let rms = (pcm.samples.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>()
-            / pcm.samples.len() as f64)
-            .sqrt();
-        println!("durata      : {:.3} s", pcm.duration_secs());
-        println!("campioni    : {}", pcm.samples.len());
-        println!("sample rate : {} Hz (mono)", pcm.sample_rate);
-        println!("picco       : {:.4} ({:.1} dBFS)", peak, 20.0 * peak.max(1e-9).log10());
-        println!("RMS         : {:.4} ({:.1} dBFS)", rms, 20.0 * rms.max(1e-9).log10());
-        return Ok(());
+    if comuni.solo_audio {
+        stampa_statistiche_audio(&pcm);
+        return Ok(None);
     }
 
     // ---------------------------------------------------------------- fase 0b
     // Scelta del dispositivo: GPU se la VRAM *totale* raggiunge la soglia.
-    let device = gpu::select(cli.min_vram_mib, cli.cpu, cli.gpu_index);
+    let device = gpu::select(comuni.vram_minima_mib, comuni.cpu, comuni.gpu);
     info!(device = %device.describe(), "dispositivo di calcolo");
 
     // ------------------------------------------------------- fasi 1, 2 e 3
     // Rilevamento del parlato, trascrizione e allineamento: l'ordine e la
     // sequenza di caricamento e rilascio dei modelli stanno in verba-core,
     // gli stessi per la riga di comando e per l'applicazione.
-    let cfg_trascrizione = ConfigTrascrizione {
+    let cfg = ConfigTrascrizione {
         modelli: PercorsiModelli {
-            whisper: cli.whisper_model.clone(),
-            segmentazione: cli.segmentation_model.clone(),
-            allineamento: cli.align_model.clone(),
-            vocabolario: cli.align_vocab.clone(),
+            whisper: comuni.modello_whisper.clone(),
+            segmentazione: comuni.modello_segmentazione.clone(),
+            allineamento: comuni.modello_allineamento.clone(),
+            vocabolario: comuni.vocabolario_allineamento.clone(),
         },
         segmentazione: SegmentationConfig {
-            onset: cli.onset,
-            offset: cli.offset,
+            onset: comuni.soglia_attacco,
+            offset: comuni.soglia_rilascio,
             ..Default::default()
         },
         whisper: WhisperConfig {
-            language: cli.language.clone(),
-            beam_size: cli.beam_size,
-            threads: threads as i32,
-            initial_prompt: initial_prompt.clone(),
+            language: comuni.lingua.clone(),
+            beam_size: comuni.beam,
+            threads: thread as i32,
+            initial_prompt,
             ..Default::default()
         },
         allineamento: align::AlignConfig {
-            durata_minima_parola: cli.durata_minima_parola.max(0.0),
+            durata_minima_parola: aspetto::durata_minima_parola(asp, date, base.as_ref()),
             ..Default::default()
         },
-        thread: threads,
-        finestre_uniformi: cli.no_segmentation.then_some(25.0),
+        thread,
+        finestre_uniformi: comuni.senza_segmentazione.then_some(25.0),
     };
-    let trascrizione = pipeline::trascrivi(&pcm, &device, &cfg_trascrizione, &progresso)?;
-    let parole = trascrizione.parole();
+    let trascrizione = pipeline::trascrivi(&pcm, &device, &cfg, progresso)?;
 
     // ---------------------------------------------------------------- fase 4
     // Impaginazione: le parole diventano righe — una alla volta a schermo —
     // misurate sul font che verra' effettivamente disegnato.
-    let (tipografo, esito_carattere) = costruisci_tipografo(&cli, &date, base.as_ref(), &layout_cfg)?;
-    if let Some(avviso) = esito_carattere.avviso() {
+    let (mut tipografo, esito) = aspetto::costruisci_tipografo(asp, date, base.as_ref(), &layout_cfg)?;
+    if let Some(avviso) = esito.avviso() {
         warn!("{avviso}");
         progresso.avviso(avviso);
     }
-    let mut tipografo = tipografo;
-
-    if let Some(percorso) = &cli.salva_preset {
-        let formato = if cli.risoluzione.is_some() {
-            FormatoPreset::DalSorgente
-        } else if layout_cfg.larghezza >= layout_cfg.altezza {
-            FormatoPreset::Orizzontale
-        } else {
-            FormatoPreset::Verticale
-        };
-        let nome = percorso
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Personalizzato")
-            .to_string();
-        let preset = Preset::da(
-            &nome,
-            &layout_cfg,
-            &stile,
-            &Richiesta {
-                famiglia: esito_carattere.famiglia().to_string(),
-                peso: esito_carattere.peso(),
-                file: None,
-            },
-            formato,
-        );
-        preset.salva(percorso)?;
-        info!(file = %percorso.display(), nome = %preset.nome, "preset salvato");
-    }
+    aspetto::salva_preset(asp, &layout_cfg, &stile, &esito)?;
 
     let blocchi = {
         let _c = progresso.inizia(Fase::Impaginazione);
-        layout::impagina(parole, &mut tipografo, &layout_cfg)?
+        layout::impagina(trascrizione.parole(), &mut tipografo, &layout_cfg)?
     };
     info!(
         righe = blocchi.len(),
-        parole = parole.len(),
+        parole = trascrizione.len(),
         righe_max = layout_cfg.righe_consentite(),
         corpo = format!(
             "{:.0} px ({:.1} % dell'altezza)",
@@ -782,464 +593,143 @@ fn main() -> Result<()> {
         "impaginazione completata"
     );
 
-    // ---------------------------------------------------------------- fase 5
-    // Disegno e codifica.
-    let formato = cli.uscita.formato();
-    let out_path = output_path(&cli, formato);
-    let vcfg = VideoConfig {
-        formato,
-        fps_num,
-        fps_den,
-        qualita: cli.qualita,
-        thread: threads,
-        durata: cli.durata.unwrap_or_else(|| pcm.duration_secs()),
-    };
-
-    // I formati che imprimono i sottotitoli hanno bisogno del filmato sotto.
-    // Aprirlo adesso, e non dopo mezz'ora di trascrizione, e' il minimo.
-    let mut filmato = if formato.ha_alfa() {
-        None
-    } else {
-        let percorso = std::path::PathBuf::from(&cli.input[0]);
-        match sorgente.as_ref().filter(|i| i.e_video()) {
-            Some(_) => Some((Media::apri(&percorso)?, percorso)),
-            None => bail!(
-                "«{}» imprime i sottotitoli sul filmato e serve un file video di partenza. \
-                 Da un file audio si puo' produrre solo un overlay: usa --uscita overlay.",
-                formato.etichetta()
-            ),
-        }
-    };
-
-    info!(
-        file = %out_path.display(),
-        formato = %formato.etichetta(),
-        risoluzione = format!("{}x{}", layout_cfg.larghezza, layout_cfg.altezza),
-        fps = format!("{fps_num}/{fps_den}"),
-        durata = format!("{:.2} s", vcfg.durata),
-        "codifica"
-    );
     let rasterizzatore = Rasterizzatore::nuovo(tipografo, layout_cfg.clone(), stile);
-    let mut scena = Scena::nuova(blocchi, rasterizzatore);
-    let stat = {
-        let _c = progresso.inizia(Fase::Codifica);
-        let sfondo = match &mut filmato {
-            Some((media, percorso)) => Sfondo::Filmato { media, percorso },
-            None => Sfondo::Trasparente,
-        };
-        video::esporta(&mut scena, sfondo, &vcfg, &out_path, &progresso)?
-    };
-    info!(
-        file = %out_path.display(),
-        fotogrammi = stat.fotogrammi,
-        disegnati = stat.fotogrammi_disegnati,
-        secondi = format!("{:.2}", stat.secondi),
-        "video scritto"
-    );
-
-    // ---------------------------------------------------------------- fase 6
-    // Uscite accessorie, solo se richieste esplicitamente.
-    if let Some(srt_path) = &cli.srt {
-        let cues = match cli.srt_mode {
-            SrtModeArg::Blocchi => srt::cues_da_blocchi(scena.blocchi()),
-            altro => {
-                let srt_cfg = SrtConfig {
-                    mode: match altro {
-                        SrtModeArg::Parola => SrtMode::Parola,
-                        SrtModeArg::Karaoke => SrtMode::Karaoke,
-                        _ => SrtMode::Riga,
-                    },
-                    max_chars: cli.srt_max_chars,
-                    ..Default::default()
-                };
-                srt::build_cues(parole, &srt_cfg)
-            }
-        };
-        std::fs::write(srt_path, srt::render(&cues))
-            .with_context(|| format!("scrittura di {}", srt_path.display()))?;
-        info!(file = %srt_path.display(), battute = cues.len(), "SRT scritto");
-    }
-    if cli.vtt.is_some() || cli.txt.is_some() {
-        let cues = srt::cues_da_blocchi(scena.blocchi());
-        if let Some(percorso) = &cli.vtt {
-            std::fs::write(percorso, srt::render_vtt(&cues))
-                .with_context(|| format!("scrittura di {}", percorso.display()))?;
-            info!(file = %percorso.display(), battute = cues.len(), "WebVTT scritto");
-        }
-        if let Some(percorso) = &cli.txt {
-            std::fs::write(percorso, srt::render_testo(&cues))
-                .with_context(|| format!("scrittura di {}", percorso.display()))?;
-            info!(file = %percorso.display(), battute = cues.len(), "testo scritto");
-        }
-    }
-    if let Some(json_path) = &cli.json {
-        std::fs::write(json_path, srt::render_json(parole)?)
-            .with_context(|| format!("scrittura di {}", json_path.display()))?;
-        info!(file = %json_path.display(), parole = parole.len(), "mappatura JSON scritta");
-    }
-
-    gpu::log_vram(&device, "finale");
-    Ok(())
-}
-
-/// Il catalogo dei caratteri secondo le opzioni date.
-fn catalogo(cli: &Cli) -> Catalogo {
-    let mut cartelle = caratteri::cartelle_predefinite();
-    cartelle.extend(cli.cartella_caratteri.iter().cloned());
-    Catalogo::nuovo(&cartelle, cli.caratteri_di_sistema)
-}
-
-/// Stampa i caratteri disponibili con i loro pesi.
-fn elenca_caratteri(cli: &Cli) {
-    let c = catalogo(cli);
-    println!("Caratteri disponibili ({}):\n", c.famiglie().len());
-    for f in c.famiglie() {
-        let pesi: Vec<String> = f.pesi.iter().map(|p| p.to_string()).collect();
-        println!(
-            "  {:<28} {:<24} {}",
-            f.nome,
-            pesi.join(" "),
-            if f.di_serie { "di serie" } else { "" }
-        );
-    }
-    if !cli.caratteri_di_sistema {
-        println!("\nCon --caratteri-di-sistema si aggiungono quelli installati sulla macchina.");
-    }
-    println!(
-        "Per usarne un altro: scaricare il .ttf e passarlo con --font FILE, oppure metterlo in\n\
-         una cartella e passarla con --cartella-caratteri CARTELLA."
-    );
-}
-
-/// Sceglie il carattere e prepara il motore di composizione.
-fn costruisci_tipografo(
-    cli: &Cli,
-    date: &DateAMano,
-    base: Option<&Preset>,
-    layout_cfg: &LayoutConfig,
-) -> Result<(Tipografo, caratteri::Esito)> {
-    let mut cat = catalogo(cli);
-    let d = base.map(|b| b.carattere()).unwrap_or_default();
-    let richiesta = Richiesta {
-        famiglia: date.oppure("carattere", &cli.carattere, d.famiglia),
-        peso: date.oppure("peso", &cli.peso, d.peso),
-        file: cli.font.clone(),
-    };
-    let esito = cat.risolvi(&richiesta)?;
-    let tipografo =
-        Tipografo::dal_catalogo(cat, &esito, layout_cfg.corpo(), layout_cfg.interlinea)
-            .context("preparazione del carattere")?;
-    Ok((tipografo, esito))
-}
-
-/// Le opzioni date davvero sulla riga di comando.
-///
-/// Serve a stratificare preset e opzioni: il preset fa da base, e cio' che
-/// l'utente ha scritto a mano lo scavalca. Senza questa distinzione un preset
-/// verrebbe sempre sovrascritto dai valori predefiniti di clap, che sono
-/// indistinguibili da una scelta esplicita.
-struct DateAMano(clap::ArgMatches);
-
-impl DateAMano {
-    fn ha(&self, nome: &str) -> bool {
-        matches!(self.0.value_source(nome), Some(clap::parser::ValueSource::CommandLine))
-    }
-
-    /// Il valore dell'opzione se e' stata data a mano, altrimenti il ripiego.
-    fn oppure<T: Clone>(&self, nome: &str, dato: &T, ripiego: T) -> T {
-        if self.ha(nome) {
-            dato.clone()
-        } else {
-            ripiego
-        }
-    }
-}
-
-/// Una riga che descrive il preset, per l'elenco.
-fn descrivi_preset(p: &Preset) -> String {
-    let formato = match p.posizione.formato {
-        FormatoPreset::Verticale => "9:16",
-        FormatoPreset::Orizzontale => "16:9",
-        FormatoPreset::DalSorgente => "dal sorgente",
-    };
-    let forma = match p.evidenziazione.forma {
-        Evidenziazione::Rettangolo => "rettangolo",
-        Evidenziazione::Sottolineatura => "sottolineatura",
-        Evidenziazione::SoloColore => "solo colore",
-        Evidenziazione::Nessuna => "nessuna evidenziazione",
-    };
-    format!(
-        "{formato}, {} riga/e, {}, {forma}",
-        p.posizione.righe_max, p.testo.carattere
-    )
+    Ok(Some(Elaborato {
+        blocchi,
+        rasterizzatore,
+        parole: trascrizione.parole().to_vec(),
+        durata_audio: pcm.duration_secs(),
+        layout: layout_cfg,
+        device,
+        thread,
+    }))
 }
 
 /// Legge le caratteristiche del file di partenza.
 ///
 /// Ritorna `None` per stdin e per gli ingressi multipli: li' non c'e' un file
 /// solo di cui parlare, e la pre-elaborazione audio se la cava lo stesso.
-fn apri_sorgente(cli: &Cli) -> Result<Option<Informazioni>> {
-    if cli.input.len() != 1 || cli.input[0] == "-" {
+fn apri_sorgente(input: &[String]) -> Result<Option<Informazioni>> {
+    if input.len() != 1 || input[0] == "-" {
         return Ok(None);
     }
-    let percorso = std::path::Path::new(&cli.input[0]);
+    let percorso = std::path::Path::new(&input[0]);
     if !percorso.is_file() {
-        return Ok(None);
+        bail!("«{}» non esiste, o non e' un file", percorso.display());
     }
-    let media = Media::apri(percorso)?;
-    Ok(Some(media.informazioni().clone()))
+    let media =
+        Media::apri(percorso).with_context(|| format!("apertura di {}", percorso.display()))?;
+    let info = media.informazioni().clone();
+    info!(
+        file = %percorso.display(),
+        modalita = ?info.modalita,
+        descrizione = %info.descrizione(),
+        "file di partenza"
+    );
+    Ok(Some(info))
 }
 
-/// Il preset di partenza, se ne e' stato chiesto uno.
-fn preset_di_partenza(cli: &Cli) -> Result<Option<Preset>> {
-    if let Some(percorso) = &cli.preset {
-        return Ok(Some(Preset::carica(percorso)?));
-    }
-    Ok(cli.preset_di_serie.map(PresetArg::preset))
-}
-
-fn configura_layout(
-    cli: &Cli,
-    date: &DateAMano,
-    base: Option<&Preset>,
-    sorgente: Option<(u32, u32)>,
-) -> Result<LayoutConfig> {
-    // Il formato: la risoluzione esplicita vince su tutto, poi il formato
-    // scritto a mano, poi quello del preset, poi il predefinito.
-    let (larghezza, altezza) = match (&cli.risoluzione, base) {
-        (Some(s), _) => analizza_risoluzione(s)?,
-        (None, Some(b)) if !date.ha("formato") => b.posizione.formato.risoluzione(sorgente),
-        _ => match cli.formato {
-            FormatoArg::Verticale => FormatoPreset::Verticale,
-            FormatoArg::Orizzontale => FormatoPreset::Orizzontale,
-            FormatoArg::DalSorgente => FormatoPreset::DalSorgente,
-        }
-        .risoluzione(sorgente),
-    };
-    if larghezza % 2 != 0 || altezza % 2 != 0 {
-        bail!(
-            "risoluzione {larghezza}x{altezza}: gli encoder vogliono dimensioni pari.              Indicane una con --risoluzione."
-        );
-    }
-
-    let d = base.map(|b| b.layout(Some((larghezza, altezza)))).unwrap_or_default();
-
-    let cfg = LayoutConfig {
-        larghezza,
-        altezza,
-        margine: date.oppure("margine", &cli.margine, d.margine),
-        larghezza_max: date.oppure("larghezza_massima", &cli.larghezza_massima, d.larghezza_max),
-        // --posizione, se c'e', ha la precedenza: e' la forma per nome della
-        // stessa grandezza.
-        posizione_verticale: match cli.posizione {
-            Some(p) => p.frazione(),
-            None => date.oppure(
-                "posizione_verticale",
-                &cli.posizione_verticale,
-                d.posizione_verticale,
-            ),
-        },
-        posizione_orizzontale: date.oppure(
-            "posizione_orizzontale",
-            &cli.posizione_orizzontale,
-            d.posizione_orizzontale,
-        ),
-        righe_max: date.oppure("righe_massime", &cli.righe_massime, d.righe_max),
-        allineamento: if date.ha("allineamento") {
-            match cli.allineamento {
-                AllineamentoArg::Sinistra => Allineamento::Sinistra,
-                AllineamentoArg::Centro => Allineamento::Centro,
-                AllineamentoArg::Destra => Allineamento::Destra,
-            }
-        } else {
-            d.allineamento
-        },
-        maiuscole: date.oppure("maiuscole", &cli.maiuscole, d.maiuscole),
-        dimensione_font: if date.ha("dimensione_font") {
-            cli.dimensione_font
-        } else {
-            d.dimensione_font
-        },
-        interlinea: date.oppure("interlinea", &cli.interlinea, d.interlinea),
-        durata_max: date.oppure("durata_blocco", &cli.durata_blocco, d.durata_max),
-        pausa_max: date.oppure("pausa_blocco", &cli.pausa_blocco, d.pausa_max),
-        tenuta: date.oppure("tenuta", &cli.tenuta, d.tenuta),
-        attivazione: Attivazione {
-            anticipo: date.oppure("anticipo", &cli.anticipo, d.attivazione.anticipo).max(0.0),
-            pausa_max: date
-                .oppure("pausa_massima", &cli.pausa_massima, d.attivazione.pausa_max)
-                .max(0.0),
-            coda: date.oppure("coda", &cli.coda, d.attivazione.coda).max(0.0),
-        },
-    };
-
-    if !(0.0..0.45).contains(&cfg.margine) {
-        bail!("--margine deve stare fra 0 e 0,45 (ricevuto {})", cfg.margine);
-    }
-    if !(0.05..=1.0).contains(&cfg.larghezza_max) {
-        bail!("--larghezza-massima deve stare fra 0,05 e 1 (ricevuto {})", cfg.larghezza_max);
-    }
-    for (nome, valore) in [
-        ("--posizione-verticale", cfg.posizione_verticale),
-        ("--posizione-orizzontale", cfg.posizione_orizzontale),
-    ] {
-        if !(0.0..=1.0).contains(&valore) {
-            bail!("{nome} deve stare fra 0 e 1 (ricevuto {valore})");
-        }
-    }
-    if !(1..=layout::RIGHE_MAX_CONSENTITE).contains(&cfg.righe_max) {
-        bail!(
-            "--righe-massime deve stare fra 1 e {} (ricevuto {})",
-            layout::RIGHE_MAX_CONSENTITE,
-            cfg.righe_max
-        );
-    }
-    Ok(cfg)
-}
-
-fn configura_stile(cli: &Cli, date: &DateAMano, base: Option<&Preset>) -> Result<Stile> {
-    let d = match base {
-        Some(b) => b.stile()?,
-        None => Stile::default(),
-    };
-    let leggi = |nome: &str, valore: &str| -> Result<Colore> {
-        Colore::da_esadecimale(valore).map_err(|e| anyhow::anyhow!("{nome}: {e}"))
-    };
-    let colore = |opzione: &str, valore: &str, ripiego: Colore| -> Result<Colore> {
-        if date.ha(opzione) {
-            leggi(&format!("--{}", opzione.replace('_', "-")), valore)
-        } else {
-            Ok(ripiego)
-        }
-    };
-
-    Ok(Stile {
-        colore: colore("colore", &cli.colore, d.colore)?,
-        colore_attivo: colore("colore_attivo", &cli.colore_attivo, d.colore_attivo)?,
-        colore_evidenziazione: colore(
-            "colore_evidenziazione",
-            &cli.colore_evidenziazione,
-            d.colore_evidenziazione,
-        )?,
-        colore_bordo: colore("colore_bordo", &cli.colore_bordo, d.colore_bordo)?,
-        bordo: date.oppure("bordo", &cli.bordo, d.bordo).max(0.0),
-        // --senza-evidenziazione e' la forma breve di --evidenziazione nessuna
-        // e ha la precedenza.
-        evidenziazione: if cli.senza_evidenziazione {
-            Evidenziazione::Nessuna
-        } else if date.ha("evidenziazione") {
-            match cli.evidenziazione {
-                EvidenziazioneArg::Rettangolo => Evidenziazione::Rettangolo,
-                EvidenziazioneArg::Sottolineatura => Evidenziazione::Sottolineatura,
-                EvidenziazioneArg::SoloColore => Evidenziazione::SoloColore,
-                EvidenziazioneArg::Nessuna => Evidenziazione::Nessuna,
-            }
-        } else {
-            d.evidenziazione
-        },
-        padding: date.oppure("padding_evidenziazione", &cli.padding_evidenziazione, d.padding).max(0.0),
-        altezza: date.oppure("altezza_evidenziazione", &cli.altezza_evidenziazione, d.altezza).max(0.0),
-        raggio: date.oppure("raggio_evidenziazione", &cli.raggio_evidenziazione, d.raggio).max(0.0),
-        spessore_sottolineatura: date
-            .oppure(
-                "spessore_sottolineatura",
-                &cli.spessore_sottolineatura,
-                d.spessore_sottolineatura,
-            )
-            .max(0.0),
-        ombra: if cli.senza_ombra { false } else { d.ombra },
-        colore_ombra: colore("colore_ombra", &cli.colore_ombra, d.colore_ombra)?,
-        ombra_spostamento: date
-            .oppure("ombra_spostamento", &cli.ombra_spostamento, d.ombra_spostamento)
-            .max(0.0),
-        ombra_sfocatura: date
-            .oppure("ombra_sfocatura", &cli.ombra_sfocatura, d.ombra_sfocatura)
-            .max(0.0),
-    })
-}
-
-fn analizza_risoluzione(s: &str) -> Result<(u32, u32)> {
-    let (l, a) = s
-        .split_once(['x', 'X', '*'])
-        .with_context(|| format!("risoluzione «{s}»: formato atteso LARGHEZZAxALTEZZA"))?;
-    let larghezza: u32 = l.trim().parse().with_context(|| format!("larghezza «{l}»"))?;
-    let altezza: u32 = a.trim().parse().with_context(|| format!("altezza «{a}»"))?;
-    if larghezza == 0 || altezza == 0 {
-        bail!("risoluzione «{s}»: le dimensioni devono essere positive");
-    }
-    if larghezza % 2 != 0 || altezza % 2 != 0 {
-        bail!("risoluzione «{s}»: larghezza e altezza devono essere pari");
-    }
-    Ok((larghezza, altezza))
-}
-
-/// Frame rate come frazione esatta.
-///
-/// I valori NTSC (23,976 / 29,97 / 59,94 …) sono scritture arrotondate di
-/// frazioni con denominatore 1001: passarli come decimali produrrebbe una
-/// deriva di alcuni fotogrammi all'ora, per cui vengono riconosciuti a parte.
-fn analizza_fps(s: &str) -> Result<(u32, u32)> {
-    let s = s.trim();
-    if let Some((n, d)) = s.split_once('/') {
-        let num: u32 = n.trim().parse().with_context(|| format!("numeratore «{n}»"))?;
-        let den: u32 = d.trim().parse().with_context(|| format!("denominatore «{d}»"))?;
-        if num == 0 || den == 0 {
-            bail!("frame rate «{s}»: numeratore e denominatore devono essere positivi");
-        }
-        return Ok((num, den));
-    }
-    let valore: f64 = s.parse().with_context(|| format!("frame rate «{s}»"))?;
-    if valore <= 0.0 {
-        bail!("frame rate «{s}»: deve essere positivo");
-    }
-    for (decimale, num) in [(23.976, 24000), (29.97, 30000), (47.952, 48000), (59.94, 60000), (119.88, 120000)] {
-        if (valore - decimale).abs() < 0.005 {
-            return Ok((num, 1001));
-        }
-    }
-    if (valore - valore.round()).abs() < 1e-9 {
-        return Ok((valore.round() as u32, 1));
-    }
-    Ok(((valore * 1000.0).round() as u32, 1000))
-}
-
-/// Il file di uscita: quello chiesto, oppure il nome del sorgente con il
-/// suffisso e l'estensione del formato, nella stessa cartella.
-fn output_path(cli: &Cli, formato: FormatoVideo) -> PathBuf {
-    if let Some(p) = &cli.output {
-        return p.clone();
-    }
-    let primo = cli.input.first().map(String::as_str).unwrap_or("uscita");
-    let base = if primo == "-" { PathBuf::from("uscita") } else { PathBuf::from(primo) };
-    let radice = base.file_stem().and_then(|s| s.to_str()).unwrap_or("uscita");
-    let nome = format!("{radice}{}.{}", formato.suffisso(), formato.estensione());
-    match base.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir.join(nome),
-        _ => PathBuf::from(nome),
-    }
+fn stampa_statistiche_audio(pcm: &Pcm) {
+    let peak = pcm.samples.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+    let rms = (pcm.samples.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>()
+        / pcm.samples.len().max(1) as f64)
+        .sqrt();
+    println!("durata      : {:.3} s", pcm.duration_secs());
+    println!("campioni    : {}", pcm.samples.len());
+    println!("sample rate : {} Hz (mono)", pcm.sample_rate);
+    println!("picco       : {:.4} ({:.1} dBFS)", peak, 20.0 * peak.max(1e-9).log10());
+    println!("RMS         : {:.4} ({:.1} dBFS)", rms, 20.0 * rms.max(1e-9).log10());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+    use verba_core::encoder::FormatoVideo;
 
     #[test]
-    fn il_frame_rate_ntsc_resta_una_frazione_esatta() {
-        assert_eq!(analizza_fps("29.97").unwrap(), (30000, 1001));
-        assert_eq!(analizza_fps("23.976").unwrap(), (24000, 1001));
-        assert_eq!(analizza_fps("30").unwrap(), (30, 1));
-        assert_eq!(analizza_fps("30000/1001").unwrap(), (30000, 1001));
-        assert_eq!(analizza_fps("12.5").unwrap(), (12500, 1000));
-        assert!(analizza_fps("0").is_err());
-        assert!(analizza_fps("boh").is_err());
+    fn la_riga_di_comando_e_coerente() {
+        Cli::command().debug_assert();
     }
 
     #[test]
-    fn la_risoluzione_richiede_dimensioni_pari() {
-        assert_eq!(analizza_risoluzione("1080x1920").unwrap(), (1080, 1920));
-        assert_eq!(analizza_risoluzione(" 1920 X 1080 ").unwrap(), (1920, 1080));
-        assert!(analizza_risoluzione("1081x1920").is_err());
-        assert!(analizza_risoluzione("1080").is_err());
-        assert!(analizza_risoluzione("0x0").is_err());
+    fn i_tre_comandi_della_spec_si_analizzano() {
+        // Sono le tre righe scritte nella spec, alla lettera.
+        let a = Cli::try_parse_from([
+            "verba", "trascrivi", "input.mp3", "--out", "sottotitoli.srt",
+            "--lingua", "it", "--termini", "glossario.csv",
+        ])
+        .unwrap();
+        match a.comando {
+            Comando::Trascrivi(t) => {
+                assert_eq!(t.input, ["input.mp3"]);
+                assert_eq!(t.out, [PathBuf::from("sottotitoli.srt")]);
+                assert_eq!(t.comuni.lingua, "it");
+                assert_eq!(t.comuni.termini, Some(PathBuf::from("glossario.csv")));
+            }
+            _ => panic!("comando sbagliato"),
+        }
+
+        let b = Cli::try_parse_from([
+            "verba", "rendi", "input.mp4", "--out", "video_sub.mp4",
+            "--preset", "orizzontale.json",
+        ])
+        .unwrap();
+        assert!(matches!(b.comando, Comando::Rendi(_)));
+
+        let c = Cli::try_parse_from([
+            "verba", "overlay", "input.mp4", "--out", "overlay.mov",
+            "--preset", "verticale.json",
+        ])
+        .unwrap();
+        assert!(matches!(c.comando, Comando::Overlay(_)));
+    }
+
+    #[test]
+    fn json_vale_su_qualsiasi_comando_e_dopo_gli_argomenti() {
+        for riga in [
+            vec!["verba", "trascrivi", "a.mp3", "--json"],
+            vec!["verba", "--json", "trascrivi", "a.mp3"],
+            vec!["verba", "rendi", "a.mp4", "--json"],
+            vec!["verba", "overlay", "a.mp4", "--json"],
+        ] {
+            let cli = Cli::try_parse_from(riga.clone()).unwrap_or_else(|e| panic!("{riga:?}: {e}"));
+            assert_eq!(cli.globali.formato_avanzamento(), avanzamento::Formato::Json);
+        }
+    }
+
+    #[test]
+    fn l_estensione_dell_uscita_sceglie_il_codec() {
+        let a = |p: &str, alfa| opzioni::formato_da_estensione(std::path::Path::new(p), alfa);
+        assert_eq!(a("v.mp4", false), Some(FormatoVideo::H264));
+        assert_eq!(a("v.mov", false), Some(FormatoVideo::Prores422));
+        assert_eq!(a("v.mov", true), Some(FormatoVideo::Prores4444));
+        assert_eq!(a("v.webm", true), Some(FormatoVideo::Vp9Alpha));
+        // Un .webm senza alfa e un .mp4 con alfa non esistono in Verba.
+        assert_eq!(a("v.webm", false), None);
+        assert_eq!(a("v.mp4", true), None);
+    }
+
+    #[test]
+    fn i_nomi_inglesi_di_prima_continuano_a_funzionare() {
+        let cli = Cli::try_parse_from([
+            "verba", "trascrivi", "a.mp3", "--language", "en", "--prompt-csv", "t.csv",
+            "--threads", "8", "--srt-mode", "karaoke",
+        ])
+        .unwrap();
+        match cli.comando {
+            Comando::Trascrivi(t) => {
+                assert_eq!(t.comuni.lingua, "en");
+                assert_eq!(t.comuni.thread, Some(8));
+                assert_eq!(t.srt_struttura, opzioni::SrtStrutturaArg::Karaoke);
+            }
+            _ => panic!("comando sbagliato"),
+        }
+    }
+
+    #[test]
+    fn senza_comando_non_si_parte() {
+        assert!(Cli::try_parse_from(["verba"]).is_err());
+        assert!(Cli::try_parse_from(["verba", "trascrivi"]).is_err());
     }
 }

@@ -21,6 +21,7 @@ use crate::align::{AlignConfig, Aligner};
 use crate::audio::Pcm;
 use crate::eventi::{Fase, Progresso};
 use crate::gpu::{self, Device};
+use crate::onnx;
 use crate::segmentation::{self, SegmentationConfig, Segmenter};
 use crate::transcribe::{Transcriber, WhisperConfig};
 use crate::trascrizione::Trascrizione;
@@ -103,6 +104,9 @@ pub fn trascrivi(
     cfg: &ConfigTrascrizione,
     progresso: &Progresso,
 ) -> Result<Trascrizione> {
+    // Prima di tutto: la libreria di ONNX Runtime. Se manca, e' meglio dirlo
+    // adesso che dopo aver caricato un modello da un gigabyte.
+    onnx::assicura_libreria()?;
     gpu::log_vram(device, "iniziale");
 
     // ------------------------------------------------------------- fase 1

@@ -365,8 +365,15 @@ runtime, quindi si sceglie liberamente la build CPU o GPU.
 # build GPU ufficiale (CUDA 12 + cuDNN 9)
 wget https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-gpu-1.22.0.tgz
 tar xf onnxruntime-linux-x64-gpu-1.22.0.tgz
-export ORT_DYLIB_PATH=$PWD/onnxruntime-linux-x64-gpu-1.22.0/lib/libonnxruntime.so
+mkdir -p ~/.local/share/verba/lib
+cp onnxruntime-linux-x64-gpu-1.22.0/lib/libonnxruntime*.so* ~/.local/share/verba/lib/
 ```
+
+Verba la cerca da sola, in quest'ordine: `ORT_DYLIB_PATH`, la cartella
+dell'eseguibile (e `lib/`, `../lib/`), `~/.local/share/verba/lib`, le cartelle
+di sistema. La variabile d'ambiente serve solo per scavalcare tutto il resto:
+un pacchetto `.deb` o un `.AppImage` si porta dietro la libreria e non ne ha
+bisogno.
 
 La versione e' vincolata: `ort 2.0.0-rc.10` legge `GetVersionString` all'avvio
 e accetta **solo la 1.22.x**.
@@ -378,13 +385,19 @@ In alternativa, `--features ort-download` fa scaricare i binari a `ort`
 
 `libonnxruntime_providers_cuda.so` non porta con se' le librerie CUDA: le cerca
 via `LD_LIBRARY_PATH`. Oltre a `cudart`, `cublas` e `cudnn` gli servono anche
-`curand`, `cufft` e `nvrtc`. Se una sola manca, il provider CUDA **non si
-registra e l'inferenza ricade su CPU senza alcun messaggio**.
+`curand`, `cufft` e `nvrtc`. Se una sola manca, il provider CUDA non si
+registra: Verba **ricade su CPU senza fermarsi**, e lo scrive nel log —
 
-Verifica prima di lanciare (nessuna riga in uscita = tutto a posto):
+```
+WARN CUDA non utilizzabile per ONNX Runtime: si continua su CPU
+     (piu' lento, stesso risultato) errore=... libcublasLt.so.12: cannot open ...
+```
+
+— cosi' non si finisce a chiedersi perche' e' lento. Per verificare prima di
+lanciare (nessuna riga in uscita = tutto a posto):
 
 ```bash
-ldd $ORT_DYLIB_PATH/../libonnxruntime_providers_cuda.so | grep "not found"
+ldd ~/.local/share/verba/lib/libonnxruntime_providers_cuda.so | grep "not found"
 ```
 
 Se sul sistema non c'e' un CUDA toolkit, le librerie di un ambiente Python con
@@ -527,88 +540,137 @@ caricamento dei modelli: un CSV malformato fallisce subito.
 
 ## Uso
 
+Tre comandi, uno per ciascuna cosa che si puo' volere.
+
+| Comando | Cosa produce |
+|---|---|
+| `verba trascrivi` | sottotitoli come file di testo: `.srt`, `.vtt`, `.json`, `.txt` |
+| `verba rendi` | il filmato di partenza con i sottotitoli **impressi** |
+| `verba overlay` | i soli sottotitoli su **sfondo trasparente**, da montare sopra |
+
+piu' tre che si limitano a dire cosa c'e': `verba caratteri`, `verba preset`,
+`verba formati`.
+
+Il **formato non si dichiara**: lo dice l'estensione di `--out`.
+
+| Comando | Estensione | Cosa esce |
+|---|---|---|
+| `trascrivi` | `.srt` | un blocco per riga mostrata |
+| | `.vtt` | lo stesso, per il web |
+| | `.json` | parola per parola: testo, inizio, fine, confidenza |
+| | `.txt` | solo il testo |
+| `rendi` | `.mp4` | H.264 CRF 18, `yuv420p` — si riproduce ovunque |
+| | `.mov` | ProRes 422 HQ — senza perdita, per chi rimonta |
+| `overlay` | `.mov` | ProRes 4444, `yuva444p10le` |
+| | `.webm` | VP9 con alfa — centinaia di volte piu' leggero, piu' lento |
+
 ### Prima di lanciarlo
 
-Tre condizioni, tutte necessarie.
-
-1. **Le due variabili d'ambiente**, `ORT_DYLIB_PATH` e `LD_LIBRARY_PATH` (vedi
-   *ONNX Runtime*). Conviene metterle nel `~/.bashrc`: senza, ONNX Runtime
-   ricade su CPU in silenzio.
+1. **`libonnxruntime.so` raggiungibile.** Verba la cerca accanto all'eseguibile,
+   in `~/.local/share/verba/lib`, nelle cartelle di sistema, e infine dove dice
+   `ORT_DYLIB_PATH`. Il modo piu' semplice e' copiarla una volta:
+   ```bash
+   mkdir -p ~/.local/share/verba/lib
+   cp /percorso/onnxruntime/lib/libonnxruntime*.so* ~/.local/share/verba/lib/
+   ```
+   Se manca, il programma lo dice subito e spiega dove metterla.
 2. **I quattro file dei modelli raggiungibili da `models/`.** Il percorso e'
    relativo alla cartella da cui lanci, quindi o ci si posiziona dentro, o si
-   passano i percorsi assoluti con `--whisper-model`, `--segmentation-model`,
-   `--align-model`, `--align-vocab`.
+   passano i percorsi assoluti con `--modello-whisper`,
+   `--modello-segmentazione`, `--modello-allineamento`,
+   `--vocabolario-allineamento`.
 3. **La build fatta**, `target/release/verba`.
-
-```bash
-cd /percorso/di/Verba
-```
 
 ### Esecuzione
 
-Forma minima: scrive `nomefile.mov` accanto al sorgente — un ProRes 4444 in 9:16
-con sfondo trasparente, da mettere sopra il video nel montaggio.
+Le tre forme minime:
 
 ```bash
-./target/release/verba /percorso/del/file.mp4
+verba trascrivi discorso.mp3 --out sottotitoli.srt --lingua it --termini glossario.csv
+verba rendi     filmato.mp4  --out filmato_sub.mp4 --preset orizzontale.json
+verba overlay   filmato.mp4  --out overlay.mov     --preset verticale.json
 ```
 
-Formato orizzontale, contorno nero, e anche l'SRT e il JSON:
+Senza `--out` il nome viene proposto accanto al sorgente: `discorso.srt`,
+`filmato_sub.mp4`, `filmato_overlay.mov`.
+
+Piu' formati di testo in una passata sola — la trascrizione avviene una volta:
 
 ```bash
-./target/release/verba /percorso/del/file.mp4 --formato 16:9 --bordo 5 \
-    -o sottotitoli.mov --srt sottotitoli.srt --json parole.json -v
+verba trascrivi intervista.m4a --out sub.srt --out sub.vtt --out parole.json --out testo.txt
 ```
 
-Risoluzione e frame rate espliciti (il frame rate accetta interi, decimali e
-frazioni: `30`, `29.97`, `30000/1001`):
+Un video con i sottotitoli impressi e, insieme, l'SRT da caricare altrove:
 
 ```bash
-./target/release/verba intervista.m4a --risoluzione 2160x3840 --fps 29.97
+verba rendi conferenza.mkv --out conferenza_sub.mp4 --srt conferenza.srt
+```
+
+Overlay verticale per i social, da un file audio (non c'e' un filmato, quindi
+le proporzioni le scegli tu):
+
+```bash
+verba overlay podcast.mp3 --out podcast_overlay.mov --formato 9:16 --risoluzione 1080x1920
 ```
 
 Stile: rettangolo arancione piu' schiacciato e piu' squadrato, contorno spesso,
 sottotitoli a meta' altezza.
 
 ```bash
-./target/release/verba intervista.m4a \
+verba overlay intervista.m4a \
     --colore-evidenziazione '#F97316' --altezza-evidenziazione 0.95 \
     --raggio-evidenziazione 0.08 --colore-bordo '#101010' --bordo 8 \
     --posizione centro
 ```
 
-Accensione: rettangolo piu' in anticipo, che si spegne prima nei silenzi e non
-resta in coda alla riga.
+Accensione: evidenziazione piu' in anticipo, che si spegne prima nei silenzi e
+non resta in coda alla riga.
 
 ```bash
-./target/release/verba intervista.m4a --anticipo 0.12 --pausa-massima 0.15 --coda 0
+verba overlay intervista.m4a --anticipo 0.12 --pausa-massima 0.15 --coda 0
 ```
 
-Nessun rettangolo, righe piu' lunghe:
+Nessuna evidenziazione, righe piu' lunghe:
 
 ```bash
-./target/release/verba intervista.m4a --senza-evidenziazione --durata-blocco 8
-```
-
-Sovrapposizione al video sorgente, per vedere il risultato:
-
-```bash
-ffmpeg -i video.mp4 -i sottotitoli.mov -filter_complex overlay -c:a copy anteprima.mp4
+verba overlay intervista.m4a --senza-evidenziazione --durata-blocco 8
 ```
 
 Piu' sorgenti concatenate, e ingresso da stdin:
 
 ```bash
-./target/release/verba parte1.wav parte2.mp3
-cat registrazione.opus | ./target/release/verba - -o out.mov
+verba trascrivi parte1.wav parte2.mp3 --out tutto.srt
+cat registrazione.opus | verba overlay - --out out.mov
 ```
 
 Solo pre-elaborazione audio, con statistiche: non carica alcun modello, ed e'
 il modo piu' rapido per verificare che la build regga.
 
 ```bash
-./target/release/verba prova.mp3 --solo-audio -v
+verba trascrivi prova.mp3 --solo-audio -v
 ```
+
+### Dentro uno script
+
+`--json`, su qualsiasi comando, scrive l'avanzamento su **stderr** come un
+oggetto JSON per riga. Su **stdout** non finisce niente che non sia stato
+chiesto, quindi le pipe e i redirect funzionano come ci si aspetta.
+
+```bash
+verba rendi filmato.mp4 --out out.mp4 --json 2> avanzamento.jsonl
+```
+
+```json
+{"evento":"iniziata","fase":"trascrizione"}
+{"evento":"avanzamento","fase":"codifica","frazione":0.5}
+{"evento":"conclusa","fase":"codifica","secondi":3.22}
+{"evento":"avviso","messaggio":"..."}
+{"evento":"annullata"}
+```
+
+`Ctrl-C` non uccide il processo: chiede alla pipeline di fermarsi al primo punto
+utile, cosi' il file video parziale viene **cancellato** invece di restare li' a
+sembrare un export riuscito.
 
 ### Averlo nel PATH
 
@@ -622,56 +684,83 @@ alternativa si tiene un alias che entra prima nella cartella.
 
 ### Cosa aspettarsi
 
-* **Formati**: qualsiasi cosa Symphonia decodifichi, quindi anche un MP4 o un
-  MKV direttamente, senza estrarre prima l'audio.
+* **Formati in ingresso**: qualsiasi cosa Symphonia decodifichi, piu' i
+  container video aperti con libavformat, quindi anche un MP4 o un MKV
+  direttamente, senza estrarre prima l'audio.
 * **Picco di VRAM**: circa 4,3 GB con Whisper large-v3 caricato. Le fasi non
-  convivono mai — Whisper viene scaricato prima che l'allineatore parta — quindi
-  quello e' il massimo, non la somma.
-* **Log da controllare** con `-v`: che la sessione ONNX dichiari
-  `device=CUDA:0` e non CPU; che la VRAM scenda alla riga *dopo lo scarico di
-  Whisper*; e quale scheda annuncia `whisper_default_buffer_type`, che con
-  Vulkan puo' non essere quella di `--gpu-index`.
+  convivono mai — Whisper viene scaricato prima che l'allineatore parta —
+  quindi quello e' il massimo, non la somma.
+* **Senza GPU funziona lo stesso**, solo piu' lentamente: se il provider CUDA
+  non si registra, Verba ricade su CPU **senza errori bloccanti** e lo scrive
+  nel log. Non serve fare niente.
 * **Dimensione del file**: ProRes 4444 e' un codec da montaggio, non da
-  distribuzione. A 1080x1920, 30 fps e `--qualita 4` sono circa 3,4 MB/s. Con
-  `--qualita` piu' alta il file cala, a scapito della nitidezza dei bordi.
-* **Tempo di codifica**: sull'audio di prova (9,6 s) la codifica occupa circa
-  5 s, cioe' meta' del tempo totale. Cresce con la risoluzione e con il frame
-  rate, non con il numero di parole.
+  distribuzione. A 1080x1920 e 30 fps sono circa 3,4 MB/s; lo stesso overlay in
+  `.webm` sta in un paio di centinaia di kilobyte. `--qualita` piu' alta fa
+  calare il file, a scapito della nitidezza dei bordi.
+* **Tempo di codifica**: cresce con la risoluzione e con il frame rate, non con
+  il numero di parole.
 
-### Il file video
+### Il file di overlay
 
-Il MOV contiene una sola traccia video: nessun audio, nessun video di fondo,
-solo i sottotitoli su trasparenza. In un montaggio va messo su una traccia
-superiore a quella del video; il canale alfa viene riconosciuto da Resolve,
-Premiere, Final Cut e da `ffmpeg -filter_complex overlay`.
+Il `.mov` e il `.webm` contengono una sola traccia video: nessun audio, nessun
+video di fondo, solo i sottotitoli su trasparenza. In un montaggio vanno messi
+su una traccia superiore a quella del video; il canale alfa viene riconosciuto
+da Resolve, Premiere, Final Cut e da `ffmpeg -filter_complex overlay`.
 
 L'alfa e' **dritta** (non premoltiplicata). Se il programma di montaggio chiede
 come interpretarla, va scelta *straight* / *non premultiplied*.
 
-### Opzioni principali
+Per vedere subito il risultato:
 
-**Formato del video**
+```bash
+ffmpeg -i video.mp4 -i overlay.mov -filter_complex overlay -c:a copy anteprima.mp4
+```
+
+### Opzioni
+
+Le opzioni di **Carattere**, **Posizione**, **Tempi**, **Stile** e **Preset**
+valgono per tutti e tre i comandi — anche per `trascrivi`, perche' un SRT «a
+blocchi» ricalca esattamente le righe che comparirebbero nel video, e quelle
+dipendono dal carattere e dalla larghezza della colonna.
+
+`verba <comando> --help` le elenca tutte, raggruppate.
+
+**Uscita**
+
+| Opzione | Comandi | Default | Descrizione |
+|---|---|---|---|
+| `-o`, `--out FILE` | tutti | accanto al sorgente | l'estensione sceglie il formato; in `trascrivi` e' ripetibile |
+| `--srt` / `--vtt` / `--txt` / `--mappa FILE` | `rendi`, `overlay` | — | file di testo in piu' |
+| `--srt-struttura blocchi\|parola\|riga\|karaoke` | tutti | `blocchi` | struttura dei sottotitoli di testo |
+| `--srt-caratteri-max` | tutti | `84` | caratteri per battuta in `riga` e `karaoke` |
+
+**Codifica** (`rendi`, `overlay`)
 
 | Opzione | Default | Descrizione |
 |---|---|---|
-| `-o`, `--output` | `<input>.mov` | file MOV ProRes 4444 di uscita |
-| `--formato 9:16\|16:9\|dal-sorgente` | `dal-sorgente` | proporzioni del fotogramma |
-| `--risoluzione LxA` | dal formato | risoluzione esplicita, dimensioni pari |
 | `--fps` | dal sorgente, o `30` | intero, decimale o frazione (`30000/1001`) |
 | `--durata` | durata audio | durata del video in secondi |
-| `--qualita` | `4` | quantizzatore ProRes: piu' basso, piu' qualita' |
+| `--qualita` | consigliata per il formato | quantizzatore ProRes o CRF: piu' basso, piu' qualita' |
 
-**Tipografia e impaginazione**
+**Carattere**
 
 | Opzione | Default | Descrizione |
 |---|---|---|
-| `--carattere` | `Inter` | famiglia; `--caratteri` elenca quelle disponibili |
+| `--carattere` | `Inter` | famiglia; `verba caratteri` elenca quelle disponibili |
 | `--peso` | `700` | peso da 100 a 900; se manca si usa il piu' vicino e lo si dice |
 | `--font FILE` | — | un `.ttf` o `.otf` preciso, senza doverlo installare |
 | `--cartella-caratteri` | — | cartella con altri caratteri; ripetibile |
 | `--caratteri-di-sistema` | off | cerca anche fra i caratteri installati |
-| `--caratteri` | — | elenca i caratteri disponibili ed esce |
 | `--dimensione-font` | 6,5 % del lato minore | corpo in pixel, riferiti all'altezza del fotogramma |
+| `--maiuscole` | off | disegna il testo in maiuscolo |
+| `--interlinea` | `1.18` | multiplo del corpo; e' la fascia su cui il rettangolo e' centrato |
+
+**Posizione**
+
+| Opzione | Default | Descrizione |
+|---|---|---|
+| `--formato 9:16\|16:9\|dal-sorgente` | `dal-sorgente` | proporzioni del fotogramma |
+| `--risoluzione LxA` | dal formato | risoluzione esplicita, dimensioni pari |
 | `--margine` | `0.05` | distanza minima dai bordi: limite invalicabile |
 | `--larghezza-massima` | `0.80` | larghezza della colonna di testo, frazione della larghezza |
 | `--posizione-verticale` | `0.82` | centro verticale del blocco, 0 in alto e 1 in basso |
@@ -679,34 +768,35 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 | `--posizione alto\|centro\|basso` | — | forma per nome di `--posizione-verticale` (18 %, 50 %, 82 %) |
 | `--righe-massime 1\|2\|3` | `1` | righe che compaiono insieme |
 | `--allineamento sinistra\|centro\|destra` | `centro` | allineamento dentro la colonna |
-| `--maiuscole` | off | disegna il testo in maiuscolo |
-| `--interlinea` | `1.18` | multiplo del corpo; e' la fascia su cui il rettangolo e' centrato |
-| `--durata-blocco` | `5.0` | durata massima di un blocco, in secondi |
-| `--pausa-blocco` | `0.7` | pausa che chiude il blocco, in secondi |
-| `--tenuta` | `0.30` | permanenza del blocco dopo l'ultima parola, in secondi |
 
-**Evidenziazione**
+Con `rendi` la risoluzione **non e' negoziabile**: e' quella del filmato. Se il
+preset ne chiede un'altra viene ignorata, e lo si dice.
+
+**Tempi**
 
 | Opzione | Default | Descrizione |
 |---|---|---|
-| `--evidenziazione rettangolo\|sottolineatura\|solo-colore\|nessuna` | `rettangolo` | forma con cui si segnala la parola in corso |
-| `--colore-evidenziazione` | `#7C3AED` | colore della forma |
-| `--colore-attivo` | `#FFFFFF` | colore del testo della parola in corso |
-| `--spessore-sottolineatura` | `0.10` | spessore della barra, in frazione del corpo |
-| `--padding-evidenziazione` | `0.18` | margine oltre la parola, in frazione del corpo |
-| `--altezza-evidenziazione` | `1.12` | altezza del rettangolo, in frazione del corpo |
-| `--raggio-evidenziazione` | `0.20` | raggio degli angoli, in frazione del corpo |
-| `--anticipo` | `0.06` | quanto il rettangolo precede la parola, in secondi |
+| `--durata-blocco` | `5.0` | durata massima di un blocco, in secondi |
+| `--pausa-blocco` | `0.7` | pausa che chiude il blocco, in secondi |
+| `--tenuta` | `0.30` | permanenza del blocco dopo l'ultima parola, in secondi |
+| `--anticipo` | `0.06` | quanto l'evidenziazione precede la parola, in secondi |
 | `--pausa-massima` | `0.60` | tetto alla permanenza nel silenzio, in secondi |
 | `--coda` | `0.40` | permanenza dopo l'ultima parola del blocco, in secondi |
 | `--durata-minima-parola` | `0.08` | durata minima attribuita a una parola, in secondi |
-| `--senza-evidenziazione` | off | non disegnare il rettangolo |
 
-**Stile del testo**
+**Stile**
 
 | Opzione | Default | Descrizione |
 |---|---|---|
 | `--colore` | `#FFFFFF` | testo, `#RRGGBB` o `#RRGGBBAA` |
+| `--colore-attivo` | `#FFFFFF` | colore del testo della parola in corso |
+| `--evidenziazione rettangolo\|sottolineatura\|solo-colore\|nessuna` | `rettangolo` | forma con cui si segnala la parola in corso |
+| `--senza-evidenziazione` | off | equivale a `--evidenziazione nessuna` |
+| `--colore-evidenziazione` | `#7C3AED` | colore della forma |
+| `--padding-evidenziazione` | `0.18` | margine oltre la parola, in frazione del corpo |
+| `--altezza-evidenziazione` | `1.12` | altezza del rettangolo, in frazione del corpo |
+| `--raggio-evidenziazione` | `0.20` | raggio degli angoli, in frazione del corpo |
+| `--spessore-sottolineatura` | `0.10` | spessore della barra, in frazione del corpo |
 | `--colore-bordo` | `#000000` | contorno del testo |
 | `--bordo` | `0.0` | spessore del contorno in pixel |
 | `--senza-ombra` | off | spegne l'ombra, che di serie e' accesa |
@@ -714,41 +804,53 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 | `--ombra-spostamento` | `0.05` | spostamento verso il basso, in frazione del corpo |
 | `--ombra-sfocatura` | `0.08` | sfocatura, in frazione del corpo |
 
-**Trascrizione, uscite accessorie e dispositivo**
+**Preset**
 
 | Opzione | Default | Descrizione |
 |---|---|---|
-| `--uscita overlay\|overlay-webm\|video\|video-prores` | `overlay` | cosa produrre |
-| `--formati` | — | elenca i formati di uscita ed esce |
-| `--srt FILE` | — | esporta anche l'SRT |
-| `--vtt FILE` | — | esporta anche il WebVTT |
-| `--txt FILE` | — | esporta anche il solo testo |
-| `--srt-mode blocchi\|parola\|riga\|karaoke` | `blocchi` | struttura dell'SRT: `blocchi` = una battuta per blocco a schermo |
-| `--srt-max-chars` | `84` | caratteri per battuta in `riga` e `karaoke` |
-| `--json FILE` | — | mappatura parola-per-parola in JSON |
 | `--preset FILE` | — | carica l'aspetto da un preset |
-| `--preset-di-serie` | — | `verticale`, `orizzontale` o `sobrio` |
+| `--preset-di-serie verticale\|orizzontale\|sobrio` | — | parte da uno dei tre di serie |
 | `--salva-preset FILE` | — | salva l'aspetto risultante |
-| `--preset-disponibili` | — | elenca i preset di serie ed esce |
-| `--language` | `it` | lingua Whisper (`auto` per rilevamento) |
-| `--beam-size` | `5` | ampiezza del beam search |
-| `--prompt` | — | prompt iniziale libero (stile, punteggiatura) |
-| `--prompt-csv` | — | CSV con le parole di inizializzazione |
-| `--prompt-column` | prima | colonna del CSV, per nome o indice |
-| `--prompt-delimiter` | auto | forza il delimitatore del CSV |
-| `--prompt-preamble` | — | testo davanti all'elenco dei termini |
-| `--prompt-max-chars` | `700` | limite del prompt (~224 token Whisper) |
-| `--solo-prompt` | off | stampa l'initial prompt ed esce |
-| `--min-vram-mib` | `8000` | VRAM **totale** minima per usare la GPU |
-| `--gpu-index` | auto | forza una GPU specifica |
-| `--cpu` | off | forza la CPU |
-| `--normalize none\|peak\|rms` | `rms` | strategia di normalizzazione |
-| `--target-dbfs` | `-20` | target RMS |
-| `--onset` / `--offset` | `0.50` / `0.35` | soglie di isteresi di pyannote |
-| `--no-segmentation` | off | finestre uniformi al posto di pyannote |
-| `--solo-audio` | off | solo pre-elaborazione, con statistiche |
-| `--progresso testo\|json\|muto` | `testo` | come mostrare l'avanzamento delle fasi su stderr |
 
+**Trascrizione, modelli e dispositivo**
+
+| Opzione | Default | Descrizione |
+|---|---|---|
+| `--lingua` | `it` | lingua Whisper (`auto` per rilevamento) |
+| `--beam` | `5` | ampiezza del beam search |
+| `--prompt` | — | prompt iniziale libero (stile, punteggiatura) |
+| `--termini FILE` | — | CSV con i termini noti |
+| `--termini-colonna` | prima | colonna del CSV, per nome o indice |
+| `--termini-delimitatore` | auto | forza il delimitatore del CSV |
+| `--termini-preambolo` | — | testo davanti all'elenco dei termini |
+| `--prompt-max-caratteri` | `700` | limite del prompt (~224 token Whisper) |
+| `--solo-prompt` | off | stampa l'initial prompt ed esce |
+| `--modello-whisper` | `models/ggml-large-v3.bin` | modello GGML per whisper.cpp |
+| `--modello-segmentazione` | `models/pyannote-segmentation-3.0.onnx` | pyannote in ONNX |
+| `--modello-allineamento` | `models/wav2vec2-italian.onnx` | wav2vec2 CTC in ONNX |
+| `--vocabolario-allineamento` | `models/wav2vec2-italian.vocab.json` | vocabolario del tokenizer |
+| `--vram-minima-mib` | `8000` | VRAM **totale** minima per usare la GPU |
+| `--gpu INDICE` | auto | forza una GPU specifica |
+| `--cpu` | off | forza la CPU |
+| `--thread` | tutti i core | thread per ONNX, whisper.cpp e l'encoder |
+| `--normalizza niente\|picco\|rms` | `rms` | strategia di normalizzazione |
+| `--dbfs-obiettivo` | `-20` | target RMS |
+| `--senza-ffmpeg` | off | disattiva il fallback su ffmpeg in decodifica |
+| `--soglia-attacco` / `--soglia-rilascio` | `0.50` / `0.60` | soglie di isteresi di pyannote |
+| `--senza-segmentazione` | off | finestre uniformi al posto di pyannote |
+| `--solo-audio` | off | solo pre-elaborazione, con statistiche |
+
+**Globali** (validi su qualsiasi comando, in qualsiasi posizione)
+
+| Opzione | Default | Descrizione |
+|---|---|---|
+| `--json` | off | avanzamento in JSON su stderr, un oggetto per riga |
+| `--progresso testo\|json\|muto` | `testo` | forma dell'avanzamento su stderr |
+| `-v`, `--verbose` | off | log di debug |
+
+I nomi inglesi di prima (`--language`, `--prompt-csv`, `--threads`,
+`--srt-mode`, `--whisper-model`, `--gpu-index`, `--min-vram-mib`, …) restano
+accettati come alias, cosi' gli script scritti prima continuano a funzionare.
 ### Selezione della GPU
 
 La regola e' **VRAM totale >= soglia**, indipendentemente da quanta memoria sia
