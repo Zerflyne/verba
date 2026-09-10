@@ -35,7 +35,7 @@ use verba_core::eventi::Fase;
 use verba_core::layout::{Allineamento, Attivazione, Formato, LayoutConfig, Tipografo};
 use verba_core::pipeline::{self, ConfigTrascrizione, PercorsiModelli};
 use verba_core::prompt::{self, PromptConfig};
-use verba_core::render::{Colore, Rasterizzatore, Stile};
+use verba_core::render::{Colore, Evidenziazione, Rasterizzatore, Stile};
 use verba_core::segmentation::SegmentationConfig;
 use verba_core::srt::{SrtConfig, SrtMode};
 use verba_core::transcribe::WhisperConfig;
@@ -290,7 +290,17 @@ struct Cli {
     #[arg(long, default_value = "#FFFFFF")]
     colore: String,
 
-    /// Colore del rettangolo dietro la parola in corso.
+    /// Colore del testo della parola in corso. Con la forma a rettangolo di
+    /// norma coincide con --colore: a indicare la parola e' il rettangolo
+    /// dietro, non un cambio di colore.
+    #[arg(long, default_value = "#FFFFFF")]
+    colore_attivo: String,
+
+    /// Forma con cui si segnala la parola in corso.
+    #[arg(long, value_enum, default_value_t = EvidenziazioneArg::Rettangolo)]
+    evidenziazione: EvidenziazioneArg,
+
+    /// Colore della forma che segnala la parola in corso.
     #[arg(long, default_value = "#7C3AED")]
     colore_evidenziazione: String,
 
@@ -306,6 +316,10 @@ struct Cli {
     #[arg(long, default_value_t = 0.20)]
     raggio_evidenziazione: f32,
 
+    /// Spessore della sottolineatura, in frazione del corpo.
+    #[arg(long, default_value_t = 0.10)]
+    spessore_sottolineatura: f32,
+
     /// Colore del contorno del testo.
     #[arg(long, default_value = "#000000")]
     colore_bordo: String,
@@ -314,9 +328,27 @@ struct Cli {
     #[arg(long, default_value_t = 0.0)]
     bordo: f32,
 
-    /// Non disegnare il rettangolo di evidenziazione.
+    /// Non segnalare in alcun modo la parola in corso. Equivale a
+    /// --evidenziazione nessuna.
     #[arg(long)]
     senza_evidenziazione: bool,
+
+    /// Non disegnare l'ombra sotto il testo. L'ombra e' accesa di default
+    /// perche' tiene i sottotitoli leggibili anche sopra un'immagine chiara.
+    #[arg(long)]
+    senza_ombra: bool,
+
+    /// Colore dell'ombra.
+    #[arg(long, default_value = "#000000A0")]
+    colore_ombra: String,
+
+    /// Spostamento dell'ombra verso il basso, in frazione del corpo.
+    #[arg(long, default_value_t = 0.05)]
+    ombra_spostamento: f32,
+
+    /// Sfocatura dell'ombra, in frazione del corpo.
+    #[arg(long, default_value_t = 0.08)]
+    ombra_sfocatura: f32,
 
     // ---- diagnostica ----
     /// Esegue solo la pre-elaborazione audio e stampa le statistiche
@@ -371,6 +403,14 @@ impl PosizioneArg {
             PosizioneArg::Basso => 0.82,
         }
     }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum EvidenziazioneArg {
+    Rettangolo,
+    Sottolineatura,
+    SoloColore,
+    Nessuna,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -658,13 +698,30 @@ fn configura_stile(cli: &Cli) -> Result<Stile> {
     };
     Ok(Stile {
         colore: leggi("--colore", &cli.colore)?,
+        colore_attivo: leggi("--colore-attivo", &cli.colore_attivo)?,
         colore_evidenziazione: leggi("--colore-evidenziazione", &cli.colore_evidenziazione)?,
         colore_bordo: leggi("--colore-bordo", &cli.colore_bordo)?,
         bordo: cli.bordo.max(0.0),
-        evidenzia: !cli.senza_evidenziazione,
+        // --senza-evidenziazione e' la forma breve di --evidenziazione nessuna
+        // e ha la precedenza.
+        evidenziazione: if cli.senza_evidenziazione {
+            Evidenziazione::Nessuna
+        } else {
+            match cli.evidenziazione {
+                EvidenziazioneArg::Rettangolo => Evidenziazione::Rettangolo,
+                EvidenziazioneArg::Sottolineatura => Evidenziazione::Sottolineatura,
+                EvidenziazioneArg::SoloColore => Evidenziazione::SoloColore,
+                EvidenziazioneArg::Nessuna => Evidenziazione::Nessuna,
+            }
+        },
         padding: cli.padding_evidenziazione.max(0.0),
         altezza: cli.altezza_evidenziazione.max(0.0),
         raggio: cli.raggio_evidenziazione.max(0.0),
+        spessore_sottolineatura: cli.spessore_sottolineatura.max(0.0),
+        ombra: !cli.senza_ombra,
+        colore_ombra: leggi("--colore-ombra", &cli.colore_ombra)?,
+        ombra_spostamento: cli.ombra_spostamento.max(0.0),
+        ombra_sfocatura: cli.ombra_sfocatura.max(0.0),
     })
 }
 

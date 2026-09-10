@@ -48,37 +48,77 @@ impl Colore {
     }
 }
 
+/// Come viene segnalata la parola in corso di pronuncia.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Evidenziazione {
+    /// Un rettangolo pieno con gli angoli arrotondati, dietro la parola.
+    #[default]
+    Rettangolo,
+    /// Una barra sotto la parola.
+    Sottolineatura,
+    /// Nessuna forma: cambia solo il colore del testo della parola.
+    SoloColore,
+    /// Niente del tutto: la parola in corso non si distingue dalle altre.
+    Nessuna,
+}
+
+impl Evidenziazione {
+    /// Vero se questa forma disegna qualcosa dietro il testo.
+    pub fn ha_forma(self) -> bool {
+        matches!(self, Evidenziazione::Rettangolo | Evidenziazione::Sottolineatura)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Stile {
-    /// Colore del testo. Resta lo stesso per tutte le parole: a indicare quella
-    /// in corso e' il rettangolo dietro, non un cambio di colore.
+    /// Colore del testo.
     pub colore: Colore,
-    /// Colore del rettangolo che sta dietro alla parola in corso.
+    /// Colore del testo della parola in corso. Con la forma a rettangolo di
+    /// norma coincide con [`Stile::colore`]: a indicare la parola e' il
+    /// rettangolo dietro, non un cambio di colore.
+    pub colore_attivo: Colore,
+    /// Colore della forma che segnala la parola in corso.
     pub colore_evidenziazione: Colore,
     pub colore_bordo: Colore,
     /// Spessore del contorno del testo in pixel. 0 = nessun contorno.
     pub bordo: f32,
-    /// Disegna il rettangolo di evidenziazione.
-    pub evidenzia: bool,
-    /// Margine orizzontale del rettangolo oltre la parola, in frazione del corpo.
+    /// Forma con cui si segnala la parola in corso.
+    pub evidenziazione: Evidenziazione,
+    /// Margine orizzontale della forma oltre la parola, in frazione del corpo.
     pub padding: f32,
     /// Altezza del rettangolo, in frazione del corpo.
     pub altezza: f32,
-    /// Raggio degli angoli del rettangolo, in frazione del corpo.
+    /// Raggio degli angoli, in frazione del corpo.
     pub raggio: f32,
+    /// Spessore della sottolineatura, in frazione del corpo.
+    pub spessore_sottolineatura: f32,
+    /// Disegna un'ombra sotto il testo. Serve a tenere i sottotitoli leggibili
+    /// anche sopra un'immagine chiara, dove il solo bianco sparisce.
+    pub ombra: bool,
+    pub colore_ombra: Colore,
+    /// Spostamento verso il basso dell'ombra, in frazione del corpo.
+    pub ombra_spostamento: f32,
+    /// Sfocatura dell'ombra, in frazione del corpo.
+    pub ombra_sfocatura: f32,
 }
 
 impl Default for Stile {
     fn default() -> Self {
         Self {
             colore: Colore::BIANCO,
+            colore_attivo: Colore::BIANCO,
             colore_evidenziazione: Colore::VIOLA,
             colore_bordo: Colore::NERO,
             bordo: 0.0,
-            evidenzia: true,
+            evidenziazione: Evidenziazione::Rettangolo,
             padding: 0.18,
             altezza: 1.12,
             raggio: 0.20,
+            spessore_sottolineatura: 0.10,
+            ombra: true,
+            colore_ombra: Colore([0, 0, 0, 160]),
+            ombra_spostamento: 0.05,
+            ombra_sfocatura: 0.08,
         }
     }
 }
@@ -192,8 +232,12 @@ struct MascheraBlocco {
     copertura: Vec<u8>,
     /// Copertura del contorno, gia' unita a quella dei glifi.
     contorno: Vec<u8>,
-    /// Rettangolo di evidenziazione di ogni parola del blocco.
-    rettangoli: Vec<Rettangolo>,
+    /// Copertura dell'ombra, gia' spostata e sfocata.
+    ombra: Vec<u8>,
+    /// Dove sta ogni parola del blocco.
+    parole: Vec<GeometriaParola>,
+    /// La forma di evidenziazione di ogni parola, gia' pronta.
+    forme: Vec<Rettangolo>,
 }
 
 impl MascheraBlocco {
@@ -202,8 +246,42 @@ impl MascheraBlocco {
             regione: Riquadro::vuoto(),
             copertura: Vec::new(),
             contorno: Vec::new(),
-            rettangoli: Vec::new(),
+            ombra: Vec::new(),
+            parole: Vec::new(),
+            forme: Vec::new(),
         }
+    }
+}
+
+/// Dove sta una parola, letta dai glifi effettivamente posizionati.
+///
+/// Gli estremi orizzontali sono quelli del **riquadro d'avanzamento**, non
+/// dell'inchiostro: e' quello che rende uniforme la spaziatura fra forma e
+/// testo, e i riquadri di due parole vicine non si sovrappongono mai — cosa
+/// che serve per sapere quali pixel appartengono alla parola in corso.
+#[derive(Debug, Clone, Copy)]
+struct GeometriaParola {
+    x0: f32,
+    x1: f32,
+    /// Centro verticale della fascia della riga su cui la parola sta.
+    centro_y: f32,
+}
+
+impl GeometriaParola {
+    fn vuota() -> Self {
+        Self { x0: f32::INFINITY, x1: f32::NEG_INFINITY, centro_y: 0.0 }
+    }
+
+    fn e_valida(&self) -> bool {
+        self.x0.is_finite() && self.x1.is_finite() && self.x1 > self.x0
+    }
+
+    /// Vero se il pixel di centro `(px, py)` appartiene a questa parola.
+    fn contiene(&self, px: f32, py: f32, mezza_fascia: f32) -> bool {
+        self.e_valida()
+            && px >= self.x0
+            && px < self.x1
+            && (py - self.centro_y).abs() <= mezza_fascia
     }
 }
 
@@ -228,7 +306,15 @@ impl Rasterizzatore {
 
     /// Rettangolo di evidenziazione della parola, nel blocco preparato.
     pub fn rettangolo(&self, parola: usize) -> Option<Rettangolo> {
-        self.maschera.rettangoli.get(parola).copied()
+        self.maschera.forme.get(parola).copied()
+    }
+
+    pub fn stile(&self) -> &Stile {
+        &self.stile
+    }
+
+    pub fn configurazione(&self) -> &LayoutConfig {
+        &self.cfg
     }
 
     /// Prepara maschere e rettangoli di un blocco. Va chiamata una volta per blocco.
@@ -257,8 +343,7 @@ impl Rasterizzatore {
         // riga, letti dai glifi effettivamente posizionati: rimisurare la
         // parola isolata darebbe una larghezza diversa (crenatura con i vicini,
         // spazi) e il rettangolo si scosterebbe dal testo.
-        let mut estremi =
-            vec![(f32::INFINITY, f32::NEG_INFINITY, 0.0f32); blocco.parole.len()];
+        let mut geometrie = vec![GeometriaParola::vuota(); blocco.parole.len()];
 
         let attrs = Attrs::new().family(Family::Name(&self.tipografo.famiglia)).weight(Weight::BOLD);
 
@@ -286,12 +371,10 @@ impl Rasterizzatore {
                         .iter()
                         .find(|p| p.byte.start <= glifo.start && glifo.start < p.byte.end)
                     {
-                        let e = &mut estremi[p.indice];
-                        // Il riquadro d'avanzamento, non l'inchiostro: e' quello
-                        // che rende uniforme la spaziatura fra rettangolo e testo.
-                        e.0 = e.0.min(x_riga + glifo.x);
-                        e.1 = e.1.max(x_riga + glifo.x + glifo.w);
-                        e.2 = centro_riga;
+                        let g = &mut geometrie[p.indice];
+                        g.x0 = g.x0.min(x_riga + glifo.x);
+                        g.x1 = g.x1.max(x_riga + glifo.x + glifo.w);
+                        g.centro_y = centro_riga;
                     }
 
                     let fisico = glifo.physical((x_riga, y_riga), 1.0);
@@ -348,19 +431,36 @@ impl Rasterizzatore {
         let padding = self.stile.padding.max(0.0) * corpo;
         let mezza_altezza = self.stile.altezza.max(0.0) * corpo / 2.0;
         let raggio_angoli = self.stile.raggio.max(0.0) * corpo;
-        let rettangoli: Vec<Rettangolo> = estremi
+        let spessore = self.stile.spessore_sottolineatura.max(0.0) * corpo;
+        let vuoto = Rettangolo { x0: 0.0, y0: 0.0, x1: 0.0, y1: 0.0, raggio: 0.0 };
+        let forme: Vec<Rettangolo> = geometrie
             .iter()
-            .map(|&(a, b, centro_y)| {
-                if !a.is_finite() || !b.is_finite() || b <= a {
-                    // Parola senza glifi disegnabili: nessun rettangolo.
-                    return Rettangolo { x0: 0.0, y0: 0.0, x1: 0.0, y1: 0.0, raggio: 0.0 };
+            .map(|g| {
+                if !g.e_valida() || !self.stile.evidenziazione.ha_forma() {
+                    // Parola senza glifi disegnabili, o forma che non disegna
+                    // nulla dietro il testo.
+                    return vuoto;
                 }
-                Rettangolo {
-                    x0: a - padding,
-                    y0: centro_y - mezza_altezza,
-                    x1: b + padding,
-                    y1: centro_y + mezza_altezza,
-                    raggio: raggio_angoli,
+                let (x0, x1) = (g.x0 - padding, g.x1 + padding);
+                match self.stile.evidenziazione {
+                    Evidenziazione::Rettangolo => Rettangolo {
+                        x0,
+                        y0: g.centro_y - mezza_altezza,
+                        x1,
+                        y1: g.centro_y + mezza_altezza,
+                        raggio: raggio_angoli,
+                    },
+                    // La barra si appoggia sotto la fascia, dove starebbe il
+                    // bordo inferiore del rettangolo: le due forme cominciano
+                    // dallo stesso posto e la sostituzione non sposta nulla.
+                    Evidenziazione::Sottolineatura => Rettangolo {
+                        x0,
+                        y0: g.centro_y + mezza_altezza - spessore,
+                        x1,
+                        y1: g.centro_y + mezza_altezza,
+                        raggio: (spessore / 2.0).min(raggio_angoli),
+                    },
+                    _ => vuoto,
                 }
             })
             .collect();
@@ -368,20 +468,30 @@ impl Rasterizzatore {
         // La regione da ridisegnare copre i glifi con il loro contorno e, se
         // l'evidenziazione e' attiva, la fascia di tutti i rettangoli: il
         // rettangolo cambia posizione a ogni parola, ma l'area sporcata no.
-        let raggio_bordo = self.stile.bordo.max(0.0).ceil() as usize + 1;
-        let mut regione = Riquadro {
-            x0: min_x.saturating_sub(raggio_bordo),
-            y0: min_y.saturating_sub(raggio_bordo),
-            x1: (max_x + 1 + raggio_bordo).min(larghezza),
-            y1: (max_y + 1 + raggio_bordo).min(altezza),
+        let spostamento = if self.stile.ombra {
+            (self.stile.ombra_spostamento.max(0.0) * corpo).round() as usize
+        } else {
+            0
         };
-        if self.stile.evidenzia {
-            for r in rettangoli.iter().filter(|r| !r.e_vuoto()) {
-                regione.x0 = regione.x0.min(r.x0.floor().max(0.0) as usize);
-                regione.y0 = regione.y0.min(r.y0.floor().max(0.0) as usize);
-                regione.x1 = regione.x1.max((r.x1.ceil().max(0.0) as usize + 1).min(larghezza));
-                regione.y1 = regione.y1.max((r.y1.ceil().max(0.0) as usize + 1).min(altezza));
-            }
+        let sfocatura = if self.stile.ombra {
+            self.stile.ombra_sfocatura.max(0.0) * corpo
+        } else {
+            0.0
+        };
+        let bordo_ombra = spostamento + sfocatura.ceil() as usize + 1;
+        let raggio_bordo = self.stile.bordo.max(0.0).ceil() as usize + 1;
+        let margine_regione = raggio_bordo.max(bordo_ombra);
+        let mut regione = Riquadro {
+            x0: min_x.saturating_sub(margine_regione),
+            y0: min_y.saturating_sub(margine_regione),
+            x1: (max_x + 1 + margine_regione).min(larghezza),
+            y1: (max_y + 1 + margine_regione).min(altezza),
+        };
+        for r in forme.iter().filter(|r| !r.e_vuoto()) {
+            regione.x0 = regione.x0.min(r.x0.floor().max(0.0) as usize);
+            regione.y0 = regione.y0.min(r.y0.floor().max(0.0) as usize);
+            regione.x1 = regione.x1.max((r.x1.ceil().max(0.0) as usize + 1).min(larghezza));
+            regione.y1 = regione.y1.max((r.y1.ceil().max(0.0) as usize + 1).min(altezza));
         }
 
         let (rw, rh) = (regione.larghezza(), regione.altezza());
@@ -391,15 +501,24 @@ impl Rasterizzatore {
             cop[y * rw..(y + 1) * rw].copy_from_slice(&copertura[src..src + rw]);
         }
         let contorno = dilata(&cop, rw, rh, self.stile.bordo);
+        // L'ombra parte dalla sagoma comprensiva di contorno: senza, con un
+        // contorno spesso si vedrebbe l'ombra affiorare da sotto il bordo.
+        let ombra = if self.stile.ombra && self.stile.colore_ombra.0[3] > 0 {
+            let base = if self.stile.bordo > 0.0 { &contorno } else { &cop };
+            sfoca(&sposta_giu(base, rw, rh, spostamento), rw, rh, sfocatura)
+        } else {
+            Vec::new()
+        };
 
-        self.maschera = MascheraBlocco { regione, copertura: cop, contorno, rettangoli };
+        self.maschera =
+            MascheraBlocco { regione, copertura: cop, contorno, ombra, parole: geometrie, forme };
     }
 
     /// Compone il blocco preparato sulla tela.
     ///
-    /// `parola_attiva` e' l'indice della parola indicata dal rettangolo, oppure
-    /// `None` quando in quell'istante non ce n'e' nessuna: in tal caso il
-    /// rettangolo semplicemente non viene disegnato, e resta la sola riga.
+    /// `parola_attiva` e' l'indice della parola indicata, oppure `None` quando
+    /// in quell'istante non ce n'e' nessuna: in tal caso non si disegna alcuna
+    /// evidenziazione, e resta il solo testo.
     pub fn componi(&self, parola_attiva: Option<usize>, tela: &mut Tela) {
         tela.pulisci();
         let m = &self.maschera;
@@ -408,25 +527,34 @@ impl Rasterizzatore {
         }
         let rw = m.regione.larghezza();
         let con_bordo = self.stile.bordo > 0.0 && self.stile.colore_bordo.0[3] > 0;
+        let con_ombra = !m.ombra.is_empty();
 
-        // Il rettangolo si sposta a scatti da una parola all'altra: non c'e'
+        // Il testo della parola in corso puo' avere un colore suo. Serve
+        // sempre, non solo con la forma "solo colore": ci si puo' volere il
+        // testo scuro dentro un rettangolo chiaro.
+        let colore_attivo_diverso = self.stile.colore_attivo.0 != self.stile.colore.0;
+        let mezza_fascia = self.stile.altezza.max(1.0) * self.cfg.corpo() / 2.0;
+        let attiva = parola_attiva.and_then(|i| m.parole.get(i)).filter(|g| g.e_valida());
+
+        // La forma si sposta a scatti da una parola all'altra: non c'e'
         // interpolazione, la geometria e' quella della parola indicata e basta.
-        let rettangolo = if self.stile.evidenzia {
+        let forma = if self.stile.evidenziazione.ha_forma() {
             parola_attiva
-                .and_then(|i| m.rettangoli.get(i))
+                .and_then(|i| m.forme.get(i))
                 .copied()
                 .filter(|r| !r.e_vuoto() && self.stile.colore_evidenziazione.0[3] > 0)
         } else {
             None
         };
         // Limiti in coordinate della regione, per non valutare la distanza
-        // firmata su tutti i pixel della riga.
-        let limiti = rettangolo.map(|r| {
+        // firmata su tutti i pixel del blocco.
+        let limiti = forma.map(|r| {
             (
                 (r.x0.floor() as i64 - m.regione.x0 as i64).max(0) as usize,
                 (r.y0.floor() as i64 - m.regione.y0 as i64).max(0) as usize,
                 ((r.x1.ceil() as i64 - m.regione.x0 as i64).max(0) as usize + 1).min(rw),
-                ((r.y1.ceil() as i64 - m.regione.y0 as i64).max(0) as usize + 1).min(m.regione.altezza()),
+                ((r.y1.ceil() as i64 - m.regione.y0 as i64).max(0) as usize + 1)
+                    .min(m.regione.altezza()),
             )
         });
 
@@ -436,7 +564,8 @@ impl Rasterizzatore {
                 let i = y * rw + x;
                 let cf = m.copertura[i];
                 let cb = if con_bordo { m.contorno[i] } else { 0 };
-                let cr = match (rettangolo, limiti) {
+                let co = if con_ombra { m.ombra[i] } else { 0 };
+                let cr = match (forma, limiti) {
                     (Some(r), Some((lx0, ly0, lx1, ly1)))
                         if x >= lx0 && x < lx1 && y >= ly0 && y < ly1 =>
                     {
@@ -447,18 +576,38 @@ impl Rasterizzatore {
                     }
                     _ => 0.0,
                 };
-                if cf == 0 && cb == 0 && cr <= 0.0 {
+                if cf == 0 && cb == 0 && co == 0 && cr <= 0.0 {
                     continue;
                 }
 
+                // I riquadri d'avanzamento di due parole vicine non si
+                // sovrappongono, quindi la posizione basta a stabilire se il
+                // pixel e' della parola in corso.
+                let colore_testo = match attiva {
+                    Some(g)
+                        if colore_attivo_diverso
+                            && g.contiene(
+                                (m.regione.x0 + x) as f32 + 0.5,
+                                (m.regione.y0 + y) as f32 + 0.5,
+                                mezza_fascia,
+                            ) =>
+                    {
+                        self.stile.colore_attivo
+                    }
+                    _ => self.stile.colore,
+                };
+
                 // Composizione premoltiplicata dal basso verso l'alto:
-                // rettangolo, contorno, testo.
+                // ombra, forma, contorno, testo.
                 let mut acc = [0.0f32; 4];
+                if con_ombra {
+                    sovrapponi(&mut acc, self.stile.colore_ombra, co as f32 / 255.0);
+                }
                 sovrapponi(&mut acc, self.stile.colore_evidenziazione, cr);
                 if con_bordo {
                     sovrapponi(&mut acc, self.stile.colore_bordo, cb as f32 / 255.0);
                 }
-                sovrapponi(&mut acc, self.stile.colore, cf as f32 / 255.0);
+                sovrapponi(&mut acc, colore_testo, cf as f32 / 255.0);
 
                 let p = (riga_tela + x) * 4;
                 if acc[3] <= 0.0 {
@@ -472,6 +621,70 @@ impl Rasterizzatore {
             }
         }
         tela.sporco = m.regione;
+    }
+}
+
+/// Sposta una maschera verso il basso di `quanto` pixel.
+fn sposta_giu(maschera: &[u8], w: usize, h: usize, quanto: usize) -> Vec<u8> {
+    if quanto == 0 {
+        return maschera.to_vec();
+    }
+    let mut out = vec![0u8; w * h];
+    for y in quanto..h {
+        let da = (y - quanto) * w;
+        out[y * w..y * w + w].copy_from_slice(&maschera[da..da + w]);
+    }
+    out
+}
+
+/// Sfoca una maschera.
+///
+/// Due passate di media mobile separabile: due box blur in cascata
+/// approssimano una gaussiana abbastanza bene da non distinguersi a occhio su
+/// un'ombra, e costano una somma per pixel invece di una convoluzione.
+fn sfoca(maschera: &[u8], w: usize, h: usize, raggio: f32) -> Vec<u8> {
+    let r = raggio.round() as usize;
+    if r == 0 || w == 0 || h == 0 {
+        return maschera.to_vec();
+    }
+    let mut a: Vec<f32> = maschera.iter().map(|&v| v as f32).collect();
+    let mut b = vec![0.0f32; w * h];
+    for _ in 0..2 {
+        media_orizzontale(&a, &mut b, w, h, r);
+        media_verticale(&b, &mut a, w, h, r);
+    }
+    a.iter().map(|&v| v.round().clamp(0.0, 255.0) as u8).collect()
+}
+
+fn media_orizzontale(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
+    let finestra = (2 * r + 1) as f32;
+    for y in 0..h {
+        let riga = y * w;
+        for x in 0..w {
+            let mut somma = 0.0f32;
+            for k in 0..=(2 * r) {
+                // Ai bordi si ripete il pixel estremo: azzerare darebbe
+                // un'ombra che si assottiglia proprio dove il testo tocca il
+                // bordo del riquadro.
+                let sx = (x + k).saturating_sub(r).min(w - 1);
+                somma += src[riga + sx];
+            }
+            dst[riga + x] = somma / finestra;
+        }
+    }
+}
+
+fn media_verticale(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
+    let finestra = (2 * r + 1) as f32;
+    for y in 0..h {
+        for x in 0..w {
+            let mut somma = 0.0f32;
+            for k in 0..=(2 * r) {
+                let sy = (y + k).saturating_sub(r).min(h - 1);
+                somma += src[sy * w + x];
+            }
+            dst[y * w + x] = somma / finestra;
+        }
     }
 }
 
@@ -566,6 +779,13 @@ mod tests {
     fn cfg() -> LayoutConfig {
         let (larghezza, altezza) = Formato::Verticale.risoluzione();
         LayoutConfig { larghezza, altezza, dimensione_font: Some(72.0), ..Default::default() }
+    }
+
+    /// Uno stile che disegna il solo testo: niente evidenziazione e niente
+    /// ombra. E' quello con cui si misura la geometria del testo, che altrimenti
+    /// verrebbe confusa con l'alone dell'ombra.
+    fn stile_nudo() -> Stile {
+        Stile { evidenziazione: Evidenziazione::Nessuna, ombra: false, ..Default::default() }
     }
 
     /// Prepara il rasterizzatore sul primo blocco del testo dato.
@@ -804,8 +1024,8 @@ mod tests {
         let testo = "il rapido allineamento delle parole permette sottotitoli precisi";
         let cfg1 = LayoutConfig { righe_max: 1, ..cfg() };
         let cfg2 = LayoutConfig { righe_max: 2, ..cfg() };
-        let (r1, mut t1, _) = scena(testo, &cfg1, Stile::default());
-        let (r2, mut t2, _) = scena(testo, &cfg2, Stile::default());
+        let (r1, mut t1, _) = scena(testo, &cfg1, stile_nudo());
+        let (r2, mut t2, _) = scena(testo, &cfg2, stile_nudo());
         r1.componi(None, &mut t1);
         r2.componi(None, &mut t2);
         let (a0, a1) = estremi_opachi_y(&t1);
@@ -819,7 +1039,7 @@ mod tests {
         let mut estremi = Vec::new();
         for allineamento in [Allineamento::Sinistra, Allineamento::Centro, Allineamento::Destra] {
             let cfg = LayoutConfig { allineamento, ..cfg() };
-            let (r, mut tela, _) = scena(testo, &cfg, Stile::default());
+            let (r, mut tela, _) = scena(testo, &cfg, stile_nudo());
             r.componi(None, &mut tela);
             estremi.push(estremi_opachi(&tela));
         }
@@ -846,7 +1066,7 @@ mod tests {
         let mut centri = Vec::new();
         for posizione in [0.2f32, 0.5, 0.9] {
             let cfg = LayoutConfig { posizione_verticale: posizione, ..cfg() };
-            let (r, mut tela, _) = scena(testo, &cfg, Stile::default());
+            let (r, mut tela, _) = scena(testo, &cfg, stile_nudo());
             r.componi(None, &mut tela);
             let (y0, y1) = estremi_opachi_y(&tela);
             centri.push((y0 + y1) / 2);
@@ -855,6 +1075,185 @@ mod tests {
             centri[0] < centri[1] && centri[1] < centri[2],
             "la posizione verticale non sposta il testo: {centri:?}"
         );
+    }
+
+    // ------------------------------------------- forme dell'evidenziazione
+
+    #[test]
+    fn la_sottolineatura_sta_sotto_il_testo_ed_e_sottile() {
+        let cfg = cfg();
+        let rett = {
+            let (r, _, _) = scena("prova", &cfg, Stile::default());
+            r.rettangolo(0).unwrap()
+        };
+        let stile = Stile {
+            evidenziazione: Evidenziazione::Sottolineatura,
+            ..Default::default()
+        };
+        let (r, _, _) = scena("prova", &cfg, stile.clone());
+        let barra = r.rettangolo(0).unwrap();
+
+        assert!(
+            barra.altezza() < rett.altezza() / 2.0,
+            "la barra e' alta {} contro {} del rettangolo",
+            barra.altezza(),
+            rett.altezza()
+        );
+        assert!(
+            (barra.y1 - rett.y1).abs() < 1e-3,
+            "barra e rettangolo devono finire alla stessa quota: {} e {}",
+            barra.y1,
+            rett.y1
+        );
+        assert!((barra.x0 - rett.x0).abs() < 1e-3 && (barra.x1 - rett.x1).abs() < 1e-3);
+        assert!(
+            (barra.altezza() - stile.spessore_sottolineatura * cfg.corpo()).abs() < 1e-3
+        );
+    }
+
+    #[test]
+    fn con_solo_colore_non_si_disegna_alcuna_forma() {
+        let cfg = cfg();
+        let stile = Stile {
+            evidenziazione: Evidenziazione::SoloColore,
+            colore_attivo: Colore::VIOLA,
+            ombra: false,
+            ..Default::default()
+        };
+        let (r, mut tela, _) = scena("alfa beta", &cfg, stile);
+        r.componi(Some(0), &mut tela);
+        // Il viola c'e', ma solo dove ci sono i glifi: molto meno di quanto ne
+        // coprirebbe un rettangolo pieno.
+        let viola = conta_colore(&tela, Colore::VIOLA);
+        let bianco = conta_colore(&tela, Colore::BIANCO);
+        assert!(viola > 0, "la parola in corso doveva cambiare colore");
+        assert!(bianco > 0, "le altre parole dovevano restare bianche");
+        assert!(
+            viola < bianco,
+            "con solo colore la parola in corso non deve coprire piu' area delle altre"
+        );
+        assert!(r.rettangolo(0).unwrap().e_vuoto(), "e' stata costruita una forma");
+    }
+
+    #[test]
+    fn il_colore_del_testo_attivo_vale_solo_per_la_parola_in_corso() {
+        let cfg = cfg();
+        let stile = Stile {
+            evidenziazione: Evidenziazione::SoloColore,
+            colore_attivo: Colore([255, 0, 0, 255]),
+            ombra: false,
+            ..Default::default()
+        };
+        let (r, mut tela, _) = scena("alfa beta gamma", &cfg, stile);
+
+        r.componi(Some(1), &mut tela);
+        let rosso_su_beta = conta_colore(&tela, Colore([255, 0, 0, 255]));
+        assert!(rosso_su_beta > 0);
+
+        // Cambiando parola, il rosso si sposta: non resta acceso su «beta».
+        r.componi(Some(2), &mut tela);
+        let centro_x = |t: &Tela, c: Colore| -> f32 {
+            let (w, _) = t.dimensioni();
+            let (mut somma, mut n) = (0.0f32, 0.0f32);
+            for (i, p) in t.pixel().chunks_exact(4).enumerate() {
+                if p[3] > 200 && p[..3] == c.0[..3] {
+                    somma += (i % w) as f32;
+                    n += 1.0;
+                }
+            }
+            somma / n
+        };
+        r.componi(Some(1), &mut tela);
+        let x_beta = centro_x(&tela, Colore([255, 0, 0, 255]));
+        r.componi(Some(2), &mut tela);
+        let x_gamma = centro_x(&tela, Colore([255, 0, 0, 255]));
+        assert!(x_gamma > x_beta, "il colore non ha seguito la parola: {x_beta} -> {x_gamma}");
+    }
+
+    #[test]
+    fn senza_parola_attiva_nessuna_parola_prende_il_colore_attivo() {
+        let cfg = cfg();
+        let stile = Stile {
+            evidenziazione: Evidenziazione::SoloColore,
+            colore_attivo: Colore([255, 0, 0, 255]),
+            ombra: false,
+            ..Default::default()
+        };
+        let (r, mut tela, _) = scena("alfa beta", &cfg, stile);
+        r.componi(None, &mut tela);
+        assert_eq!(conta_colore(&tela, Colore([255, 0, 0, 255])), 0);
+    }
+
+    // ------------------------------------------------------------- ombra
+
+    #[test]
+    fn l_ombra_allarga_la_sagoma_verso_il_basso() {
+        let cfg = cfg();
+        let senza = {
+            let (r, mut tela, _) = scena("ombra", &cfg, stile_nudo());
+            r.componi(None, &mut tela);
+            estremi_opachi_y(&tela)
+        };
+        let stile = Stile { ombra: true, ..stile_nudo() };
+        let (r, mut tela, _) = scena("ombra", &cfg, stile);
+        r.componi(None, &mut tela);
+        let con = estremi_opachi_y(&tela);
+
+        assert!(con.1 > senza.1, "l'ombra non scende sotto il testo: {con:?} contro {senza:?}");
+        assert!(
+            con.1 - senza.1 <= (0.3 * cfg.corpo()) as usize,
+            "l'ombra scende troppo: {} px",
+            con.1 - senza.1
+        );
+    }
+
+    #[test]
+    fn l_ombra_sfuma_invece_di_avere_un_bordo_netto() {
+        let cfg = cfg();
+        let stile = Stile { ombra: true, ..stile_nudo() };
+        let (r, mut tela, _) = scena("ombra", &cfg, stile);
+        r.componi(None, &mut tela);
+        // Un'ombra sfocata produce molti valori di alfa intermedi; una netta
+        // ne produrrebbe pochissimi.
+        let mut livelli = std::collections::HashSet::new();
+        for p in tela.pixel().chunks_exact(4) {
+            if p[3] > 0 && p[3] < 250 {
+                livelli.insert(p[3]);
+            }
+        }
+        assert!(livelli.len() > 20, "solo {} livelli di alfa: l'ombra non sfuma", livelli.len());
+    }
+
+    #[test]
+    fn senza_ombra_la_tela_resta_pulita_intorno_al_testo() {
+        let cfg = cfg();
+        let (r, mut tela, _) = scena("ombra", &cfg, stile_nudo());
+        r.componi(None, &mut tela);
+        let opachi_scuri = tela
+            .pixel()
+            .chunks_exact(4)
+            .filter(|p| p[3] > 0 && p[0] < 60 && p[1] < 60 && p[2] < 60)
+            .count();
+        assert_eq!(opachi_scuri, 0, "senza ombra non ci devono essere pixel scuri");
+    }
+
+    #[test]
+    fn la_sfocatura_a_raggio_nullo_non_cambia_nulla() {
+        let m = vec![0u8, 255, 0, 255];
+        assert_eq!(sfoca(&m, 2, 2, 0.0), m);
+    }
+
+    #[test]
+    fn lo_spostamento_a_zero_non_cambia_nulla() {
+        let m = vec![1u8, 2, 3, 4];
+        assert_eq!(sposta_giu(&m, 2, 2, 0), m);
+    }
+
+    #[test]
+    fn lo_spostamento_porta_la_riga_di_sopra() {
+        // 2x2: la prima riga e' piena, la seconda vuota.
+        let m = vec![255u8, 255, 0, 0];
+        assert_eq!(sposta_giu(&m, 2, 2, 1), vec![0, 0, 255, 255]);
     }
 
     #[test]
@@ -897,7 +1296,7 @@ mod tests {
     #[test]
     fn senza_evidenziazione_resta_solo_il_testo() {
         let cfg = cfg();
-        let stile = Stile { evidenzia: false, ..Default::default() };
+        let stile = Stile { evidenziazione: Evidenziazione::Nessuna, ..Default::default() };
         let (r, mut tela, _) = scena("alfa beta", &cfg, stile);
         r.componi(Some(0), &mut tela);
         assert_eq!(conta_colore(&tela, Colore::VIOLA), 0);
@@ -931,12 +1330,12 @@ mod tests {
     fn il_contorno_allarga_la_sagoma() {
         let cfg = cfg();
         let senza = {
-            let stile = Stile { bordo: 0.0, evidenzia: false, ..Default::default() };
+            let stile = Stile { bordo: 0.0, ..stile_nudo() };
             let (r, mut tela, _) = scena("bordo", &cfg, stile);
             r.componi(Some(0), &mut tela);
             tela.pixel().chunks_exact(4).filter(|p| p[3] > 0).count()
         };
-        let stile = Stile { bordo: 6.0, evidenzia: false, ..Default::default() };
+        let stile = Stile { bordo: 6.0, ..stile_nudo() };
         let (r, mut tela, _) = scena("bordo", &cfg, stile);
         r.componi(Some(0), &mut tela);
         let con = tela.pixel().chunks_exact(4).filter(|p| p[3] > 0).count();
