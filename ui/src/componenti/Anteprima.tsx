@@ -4,6 +4,12 @@
  *  arrivano gia' composti da `verba-core` — **lo stesso codice dell'export** —
  *  e qui si mettono su un canvas e basta.
  *
+ *  Con un file di solo audio non c'e' un filmato sotto e il fotogramma e'
+ *  trasparente dove non ci sono sottotitoli: a schermo lo si guarda su nero,
+ *  che e' come lo si guarderebbe in un montaggio. La trasparenza resta intatta
+ *  nel file esportato — e' il fondo dell'anteprima a essere nero, non i
+ *  pixel.
+ *
  *  Durante il trascinamento del cursore le richieste si limitano a una per
  *  fotogramma di schermo, e quella in volo non si accavalla con la
  *  successiva: e' l'unica ottimizzazione ammessa, perche' non cambia cosa si
@@ -21,6 +27,8 @@ interface Props {
   /** La frazione di altezza su cui sta la linea di base. */
   baseline?: number;
   margine?: number;
+  /** Il file di partenza e' solo audio: non c'e' un filmato sotto. */
+  soloAudio?: boolean;
 }
 
 export function Anteprima({
@@ -30,6 +38,7 @@ export function Anteprima({
   guide = false,
   baseline = 0.82,
   margine = 0.05,
+  soloAudio = false,
 }: Props) {
   const tela = useRef<HTMLCanvasElement>(null);
   const inVolo = useRef(false);
@@ -71,7 +80,7 @@ export function Anteprima({
   }, [tempo, larghezza, altezza]);
 
   return (
-    <div className="anteprima">
+    <div className={`anteprima${soloAudio ? " su-nero" : ""}`}>
       <canvas ref={tela} width={larghezza} height={altezza} />
       {guide && (
         <svg className="guide" viewBox={`0 0 ${larghezza} ${altezza}`} preserveAspectRatio="none">

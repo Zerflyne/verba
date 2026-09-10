@@ -14,9 +14,13 @@ description = "Verba — sottotitoli automatici in locale, applicazione desktop"
 name = "verba-app"
 path = "src/main.rs"
 
+# Solo `lib`: `cdylib` e `staticlib` servono al guscio Android e a quello iOS,
+# che qui non esistono — i bersagli del bundle sono deb, AppImage e nsis. Con
+# tutti e tre, ogni compilazione produceva 1,26 GB di archivi che nessuno
+# apriva mai.
 [lib]
 name = "verba_app"
-crate-type = ["lib", "cdylib", "staticlib"]
+crate-type = ["lib"]
 path = "src/lib.rs"
 
 [build-dependencies]
@@ -30,6 +34,9 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-tauri = { version = "2", features = [] }
+# `protocol-asset` serve a far leggere alla webview la traccia d'anteprima:
+# senza, l'indirizzo `asset://` non esiste e il pulsante di riproduzione
+# resterebbe muto. L'ambito e' ristretto in tauri.conf.json a `$TEMP/verba-*.wav`.
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

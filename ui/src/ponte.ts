@@ -20,7 +20,9 @@ import type {
   ParolaVista,
   Preset,
   Riepilogo,
+  SchedaVista,
   StatoModelli,
+  TerminiVisti,
 } from "./tipi";
 import { bancoDiProva, fotogrammaFinto, presetFinti, scenaIniziale } from "./banco";
 
@@ -97,6 +99,11 @@ export const salvaImpostazioni = (nuove: Impostazioni) =>
 
 export const statoModelli = () => chiama<StatoModelli>("stato_modelli");
 export const scaricaModelli = () => chiama<StatoModelli>("scarica_modelli");
+export const gpuDisponibili = () => chiama<SchedaVista[]>("gpu_disponibili");
+
+export const termini = () => chiama<TerminiVisti>("termini");
+export const terminiSalva = (elenco: string[]) =>
+  chiama<TerminiVisti>("termini_salva", { elenco });
 
 export const apri = (percorso: string) => chiama<Descrizione>("apri", { percorso });
 export const chiudi = () => chiama<void>("chiudi");
@@ -112,6 +119,19 @@ export const applicaAspetto = (preset: Preset) =>
   chiama<string | null>("applica_aspetto", { preset });
 
 export const dimensioni = () => chiama<[number, number] | null>("dimensioni");
+
+/** L'indirizzo da dare a un `<audio>` per sentire il file aperto.
+ *
+ *  Il motore scrive un WAV temporaneo dal PCM gia' decodificato e ne
+ *  restituisce il percorso; `convertFileSrc` lo trasforma in un indirizzo che
+ *  la webview puo' caricare. Passare il file di partenza non funzionerebbe:
+ *  di un `.mkv` o di un `.opus` la webview non ha detto di saper fare niente. */
+export async function sorgenteAudio(): Promise<string | null> {
+  if (finto) return null;
+  const percorso = await chiama<string>("traccia_audio");
+  const { convertFileSrc } = await import("@tauri-apps/api/core");
+  return convertFileSrc(percorso);
+}
 export const onda = () => chiama<number[]>("onda");
 export const parole = () => chiama<ParolaVista[]>("parole");
 export const finestra = (t: number, quante: number) =>

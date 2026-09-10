@@ -78,6 +78,18 @@ impl Dimensione {
         }
     }
 
+    /// La dimensione desumibile dal nome del file GGML.
+    ///
+    /// Serve a chi ha in mano solo il percorso — la pipeline, per stimare la
+    /// memoria — e non vuole un secondo campo che possa andare fuori sincrono
+    /// con il percorso stesso. Un nome che non si riconosce vale `LargeV3`:
+    /// e' la stima piu' alta, e sbagliare per eccesso qui costa una staffetta
+    /// in piu', non un errore di memoria esaurita.
+    pub fn dal_file(percorso: &std::path::Path) -> Self {
+        let nome = percorso.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        Self::TUTTE.into_iter().find(|d| d.file() == nome).unwrap_or(Dimensione::LargeV3)
+    }
+
     pub fn da_nome(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "small" => Some(Dimensione::Small),

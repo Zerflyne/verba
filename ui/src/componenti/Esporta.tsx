@@ -47,20 +47,29 @@ export function Esporta(p: Props) {
             <>
               <Gruppo titolo="Formato">
                 <div className="elenco-formati">
-                  {/* In modalita' audio i formati video non ci sono proprio:
-                      nasconderli e' piu' onesto che mostrarli spenti. */}
-                  {!p.soloAudio &&
-                    p.formati.video.map((f) => (
-                      <Formato
-                        key={f.id}
-                        id={f.id}
-                        nome={f.etichetta}
-                        estensione={f.estensione}
-                        descrizione={f.descrizione}
-                        scelto={p.scelto === f.id}
-                        onScegli={p.onScegliFormato}
-                      />
-                    ))}
+                  {/* Da un file di solo audio si esporta comunque un video:
+                      quello che non ha senso e' imprimere i sottotitoli su un
+                      filmato che non esiste, quindi il motore offre soltanto i
+                      formati che conservano la trasparenza. L'elenco arriva
+                      gia' filtrato da li' — filtrarlo una seconda volta qui
+                      voleva dire toglierli tutti. */}
+                  {p.formati.video.map((f) => (
+                    <Formato
+                      key={f.id}
+                      id={f.id}
+                      nome={f.etichetta}
+                      estensione={f.estensione}
+                      descrizione={f.descrizione}
+                      scelto={p.scelto === f.id}
+                      onScegli={p.onScegliFormato}
+                    />
+                  ))}
+                  {p.soloAudio && p.formati.video.length > 0 && (
+                    <p className="nota" style={{ margin: "2px 0 10px" }}>
+                      Il file di partenza e' solo audio: i sottotitoli escono su sfondo
+                      trasparente, da sovrapporre a un filmato in montaggio.
+                    </p>
+                  )}
                   {p.formati.testo.map((f) => (
                     <Formato
                       key={f.id}

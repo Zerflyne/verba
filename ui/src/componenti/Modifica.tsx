@@ -19,6 +19,10 @@ interface Props {
   altezza: number;
   tempo: number;
   durata: number;
+  /** Il file di partenza e' solo audio. */
+  soloAudio: boolean;
+  /** L'indirizzo della traccia da suonare, se c'e'. */
+  audio: string | null;
   inRiproduzione: boolean;
   avvisoCarattere: string | null;
   onPreset: (p: Preset) => void;
@@ -74,6 +78,7 @@ export function Modifica(p: Props) {
               altezza={p.altezza}
               baseline={preset.posizione.verticale}
               margine={preset.posizione.margine}
+              soloAudio={p.soloAudio}
             />
             <Trasporto
               tempo={p.tempo}
@@ -81,6 +86,7 @@ export function Modifica(p: Props) {
               inRiproduzione={p.inRiproduzione}
               onTempo={p.onTempo}
               onRiproduzione={p.onRiproduzione}
+              audio={p.audio}
             />
           </div>
 

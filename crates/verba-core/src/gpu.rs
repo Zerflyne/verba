@@ -6,11 +6,50 @@
 
 
 use nvml_wrapper::Nvml;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 /// Soglia di default: 8000 MiB. Nota: schede da "8 GB" espongono spesso
 /// 8188 MiB (7.99 GiB), quindi una soglia di 8192 le escluderebbe per 4 MiB.
 pub const DEFAULT_MIN_VRAM_MIB: u64 = 8000;
+
+/// Una GPU come la vede chi deve sceglierla dall'elenco.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Scheda {
+    pub indice: u32,
+    pub nome: String,
+    pub totale_mib: u64,
+    pub libera_mib: u64,
+}
+
+impl Scheda {
+    /// «CUDA:1 — Tesla P40, 23040 MiB». E' la riga del menu a tendina.
+    pub fn etichetta(&self) -> String {
+        format!("CUDA:{} — {}, {} MiB", self.indice, self.nome, self.totale_mib)
+    }
+}
+
+/// Tutte le GPU NVIDIA visibili, nell'ordine in cui NVML le espone.
+///
+/// Un elenco vuoto significa «nessuna GPU utilizzabile», non «errore»: NVML
+/// puo' mancare del tutto, ed e' una macchina che lavora su CPU.
+pub fn elenco() -> Vec<Scheda> {
+    let Ok(nvml) = Nvml::init() else { return Vec::new() };
+    let Ok(count) = nvml.device_count() else { return Vec::new() };
+    let mut out = Vec::with_capacity(count as usize);
+    for indice in 0..count {
+        let Ok(dev) = nvml.device_by_index(indice) else { continue };
+        let nome = dev.name().unwrap_or_else(|_| format!("GPU {indice}"));
+        let Ok(mem) = dev.memory_info() else { continue };
+        out.push(Scheda {
+            indice,
+            nome,
+            totale_mib: mem.total / 1024 / 1024,
+            libera_mib: mem.free / 1024 / 1024,
+        });
+    }
+    out
+}
 
 #[derive(Debug, Clone)]
 pub enum Device {
@@ -49,40 +88,22 @@ pub fn select(min_total_mib: u64, force_cpu: bool, preferred: Option<u32>) -> De
         return Device::Cpu;
     }
 
-    let nvml = match Nvml::init() {
-        Ok(n) => n,
-        Err(e) => {
-            warn!(error = %e, "NVML non disponibile: si procede su CPU");
-            return Device::Cpu;
-        }
-    };
-
-    let count = match nvml.device_count() {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(error = %e, "impossibile enumerare le GPU: si procede su CPU");
-            return Device::Cpu;
-        }
-    };
-
-    let mut candidates: Vec<(u32, String, u64, u64)> = Vec::new(); // idx, nome, totale, libera
-    for idx in 0..count {
-        let Ok(dev) = nvml.device_by_index(idx) else { continue };
-        let name = dev.name().unwrap_or_else(|_| format!("GPU {idx}"));
-        let Ok(mem) = dev.memory_info() else { continue };
-        let total_mib = mem.total / 1024 / 1024;
-        let free_mib = mem.free / 1024 / 1024;
+    let schede = elenco();
+    if schede.is_empty() {
+        warn!("nessuna GPU NVIDIA visibile: si procede su CPU");
+        return Device::Cpu;
+    }
+    for s in &schede {
         info!(
-            gpu = idx, %name, totale_mib = total_mib, libera_mib = free_mib,
+            gpu = s.indice, nome = %s.nome, totale_mib = s.totale_mib, libera_mib = s.libera_mib,
             "GPU rilevata"
         );
-        candidates.push((idx, name, total_mib, free_mib));
     }
 
     if let Some(want) = preferred {
-        if let Some((idx, name, total, _)) = candidates.iter().find(|c| c.0 == want) {
-            let dev = Device::Cuda { index: *idx, name: name.clone(), total_mib: *total };
-            info!(device = %dev.describe(), "GPU imposta da riga di comando");
+        if let Some(s) = schede.iter().find(|s| s.indice == want) {
+            let dev = Device::Cuda { index: s.indice, name: s.nome.clone(), total_mib: s.totale_mib };
+            info!(device = %dev.describe(), "GPU scelta a mano");
             return dev;
         }
         warn!(indice = want, "la GPU richiesta non esiste: ricado sulla selezione automatica");
@@ -90,14 +111,14 @@ pub fn select(min_total_mib: u64, force_cpu: bool, preferred: Option<u32>) -> De
 
     // Il criterio e' la VRAM *totale*: la memoria libera non incide, perche'
     // le fasi della pipeline vengono caricate e scaricate una alla volta.
-    let best = candidates
+    let best = schede
         .into_iter()
-        .filter(|(_, _, total, _)| *total >= min_total_mib)
-        .max_by_key(|(_, _, total, _)| *total);
+        .filter(|s| s.totale_mib >= min_total_mib)
+        .max_by_key(|s| s.totale_mib);
 
     match best {
-        Some((index, name, total_mib, _)) => {
-            let dev = Device::Cuda { index, name, total_mib };
+        Some(s) => {
+            let dev = Device::Cuda { index: s.indice, name: s.nome, total_mib: s.totale_mib };
             info!(device = %dev.describe(), soglia_mib = min_total_mib, "GPU selezionata");
             dev
         }
@@ -106,6 +127,15 @@ pub fn select(min_total_mib: u64, force_cpu: bool, preferred: Option<u32>) -> De
             Device::Cpu
         }
     }
+}
+
+/// La VRAM libera, in MiB, del dispositivo scelto.
+pub fn vram_libera_mib(device: &Device) -> Option<u64> {
+    let index = device.cuda_index()?;
+    let nvml = Nvml::init().ok()?;
+    let dev = nvml.device_by_index(index).ok()?;
+    let mem = dev.memory_info().ok()?;
+    Some(mem.free / 1024 / 1024)
 }
 
 /// Stato della VRAM (MiB usati / totali) del dispositivo selezionato.

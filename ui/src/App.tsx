@@ -17,8 +17,10 @@ import type {
   ParolaVista,
   Preset,
   Riepilogo,
+  SchedaVista,
   Sezione,
   StatoModelli,
+  TerminiVisti,
 } from "./tipi";
 import { BarraLaterale } from "./componenti/BarraLaterale";
 import { BarraDiStato, type Tono } from "./componenti/BarraDiStato";
@@ -26,6 +28,7 @@ import { Carica, ETICHETTE, FASI_TRASCRIZIONE, type StatoFase } from "./componen
 import { Modifica } from "./componenti/Modifica";
 import { Esporta, type StatoExport } from "./componenti/Esporta";
 import { Impostazioni } from "./componenti/Impostazioni";
+import { Termini } from "./componenti/Termini";
 import { durata as leggiDurata } from "./componenti/controlli";
 
 const FILTRI_MEDIA = [
@@ -58,6 +61,16 @@ export default function App() {
   const [modelli, setModelli] = useState<StatoModelli | null>(null);
   const [scaricando, setScaricando] = useState(false);
   const [info, setInfo] = useState<Info | null>(null);
+  const [gpu, setGpu] = useState<SchedaVista[]>([]);
+
+  const [termini, setTermini] = useState<TerminiVisti | null>(null);
+  const [mostraTermini, setMostraTermini] = useState(false);
+  /** I termini com'erano all'ultima trascrizione: serve a sapere se cambiarli
+   *  ha reso la trascrizione vecchia. */
+  const [terminiUsati, setTerminiUsati] = useState<string | null>(null);
+
+  /** L'indirizzo della traccia da suonare, quando c'e' un file aperto. */
+  const [audio, setAudio] = useState<string | null>(null);
 
   const [formati, setFormati] = useState<FormatiDisponibili>({ video: [], testo: [] });
   const [formatoScelto, setFormatoScelto] = useState("h264");
@@ -81,7 +94,13 @@ export default function App() {
       setImpostazioni(i);
       setImpostazioniSalvate(i);
       setModelli(await ponte.statoModelli());
+      setGpu(await ponte.gpuDisponibili());
       setCaratteri(await ponte.caratteri());
+      try {
+        setTermini(await ponte.termini());
+      } catch {
+        /* un CSV illeggibile non deve impedire l'avvio: lo si dira' aprendo l'editor */
+      }
       const serie = await ponte.presetDiSerie();
       setPreset(serie[1] ?? serie[0] ?? null);
 
@@ -158,6 +177,7 @@ export default function App() {
       setRiepilogo(null);
       setTempo(0);
       setInRiproduzione(false);
+      setAudio(null);
       setElaborando(true);
       setFasi(
         FASI_TRASCRIZIONE.map((f) => ({
@@ -169,11 +189,36 @@ export default function App() {
       );
 
       try {
+        // Senza modelli non si trascrive, e va detto prima di aprire il file:
+        // aprirlo, mostrare le caratteristiche e poi fermarsi con una riga in
+        // fondo era esattamente il modo di non farsi capire.
+        const m = await ponte.statoModelli();
+        setModelli(m);
+        if (!m.pronto) {
+          setElaborando(false);
+          setFile(null);
+          setSezione("carica");
+          setStato({
+            tono: "errore",
+            testo: "Mancano i modelli: scaricali qui sopra, poi ricarica il file.",
+          });
+          return;
+        }
+
         const d = await ponte.apri(percorso);
         setFile(d);
         setStato({ tono: "riposo", testo: `${d.nome} · ${d.riassunto}` });
 
         const r = await ponte.trascrivi();
+        setTerminiUsati(JSON.stringify(termini?.termini ?? []));
+
+        // La traccia si chiede *dopo*: per la durata della trascrizione la
+        // sessione e' fuori dal suo mutex, e chiederla prima significherebbe
+        // sentirsi rispondere che non c'e' nessun file aperto.
+        void ponte
+          .sorgenteAudio()
+          .then(setAudio)
+          .catch(() => setAudio(null));
         setRiepilogo(r);
         setParole(await ponte.parole());
         setOnda(await ponte.onda());
@@ -192,8 +237,20 @@ export default function App() {
         faseInCorso.current = null;
       }
     },
-    [],
+    [termini],
   );
+
+  const scaricaModelli = useCallback(async () => {
+    setScaricando(true);
+    try {
+      setModelli(await ponte.scaricaModelli());
+      setStato({ tono: "ok", testo: "Modelli pronti: ora si puo' caricare un file" });
+    } catch (e) {
+      setStato({ tono: "errore", testo: String(e) });
+    } finally {
+      setScaricando(false);
+    }
+  }, []);
 
   const scegliFile = useCallback(async () => {
     const scelto = await ponte.scegliFile(FILTRI_MEDIA);
@@ -221,6 +278,15 @@ export default function App() {
       /* senza file aperto non c'e' un nome da proporre */
     }
   }, []);
+
+  // Il formato preselezionato e' `h264`, che per un file di solo audio non
+  // viene nemmeno offerto: senza questo, la sezione Esporta si apriva con
+  // niente di selezionato e il pulsante non faceva niente.
+  useEffect(() => {
+    const tutti = [...formati.video, ...formati.testo];
+    if (tutti.length === 0) return;
+    if (!tutti.some((f) => f.id === formatoScelto)) void scegliFormato(tutti[0].id);
+  }, [formati, formatoScelto, scegliFormato]);
 
   useEffect(() => {
     if (sezione === "esporta" && !destinazione) void scegliFormato(formatoScelto);
@@ -256,13 +322,46 @@ export default function App() {
   // ------------------------------------------------------- le impostazioni
   const pendenti = useMemo(() => {
     if (!impostazioni || !impostazioniSalvate || !riepilogo) return false;
+    const terminiOra = JSON.stringify(termini?.termini ?? []);
     return (
       impostazioni.modello !== impostazioniSalvate.modello ||
       impostazioni.lingua !== impostazioniSalvate.lingua ||
       impostazioni.dispositivo !== impostazioniSalvate.dispositivo ||
-      impostazioni.termini !== impostazioniSalvate.termini
+      impostazioni.gpu !== impostazioniSalvate.gpu ||
+      impostazioni.termini !== impostazioniSalvate.termini ||
+      (terminiUsati !== null && terminiOra !== terminiUsati)
     );
-  }, [impostazioni, impostazioniSalvate, riepilogo]);
+  }, [impostazioni, impostazioniSalvate, riepilogo, termini, terminiUsati]);
+
+  const salvaTermini = useCallback(async (elenco: string[]) => {
+    try {
+      setTermini(await ponte.terminiSalva(elenco));
+      setImpostazioni(await ponte.impostazioni());
+      setMostraTermini(false);
+      setStato({
+        tono: "ok",
+        testo:
+          elenco.length > 0
+            ? `${elenco.length} termini noti salvati`
+            : "Nessun termine noto: la trascrizione non riceve suggerimenti",
+      });
+    } catch (e) {
+      setStato({ tono: "errore", testo: String(e) });
+    }
+  }, []);
+
+  const importaTermini = useCallback(async () => {
+    const f = await ponte.scegliFile([{ name: "CSV", extensions: ["csv", "txt"] }]);
+    if (!f) return;
+    try {
+      const i = await ponte.impostazioni();
+      await ponte.salvaImpostazioni({ ...i, termini: f });
+      setImpostazioni(await ponte.impostazioni());
+      setTermini(await ponte.termini());
+    } catch (e) {
+      setStato({ tono: "errore", testo: String(e) });
+    }
+  }, []);
 
   const cambiaImpostazioni = useCallback(async (d: DatiImpostazioni) => {
     setImpostazioni(d);
@@ -295,6 +394,13 @@ export default function App() {
           onda={onda}
           inRiproduzione={inRiproduzione}
           sopra={sopra}
+          modelli={modelli}
+          scaricando={scaricando}
+          frazioneScarico={frazione}
+          termini={termini?.termini.length ?? 0}
+          audio={audio}
+          onTermini={() => setMostraTermini(true)}
+          onScarica={() => void scaricaModelli()}
           onScegli={() => void scegliFile()}
           onAnnulla={() => void ponte.annulla()}
           onTempo={setTempo}
@@ -311,6 +417,8 @@ export default function App() {
           tempo={tempo}
           durata={durataFile}
           inRiproduzione={inRiproduzione}
+          soloAudio={file?.modalita === "audio"}
+          audio={audio}
           avvisoCarattere={avvisoCarattere}
           onPreset={(p) => void applica(p)}
           onTempo={setTempo}
@@ -386,14 +494,13 @@ export default function App() {
           scaricando={scaricando}
           frazioneScarico={frazione}
           pendenti={pendenti}
-          terminiLetti={null}
+          gpu={gpu}
+          terminiLetti={
+            termini ? { quanti: termini.termini.length, primi: termini.termini.slice(0, 6) } : null
+          }
           onCambia={(d) => void cambiaImpostazioni(d)}
-          onScegliTermini={() => {
-            void (async () => {
-              const f = await ponte.scegliFile([{ name: "CSV", extensions: ["csv", "txt"] }]);
-              if (f) void cambiaImpostazioni({ ...impostazioni, termini: f });
-            })();
-          }}
+          onTermini={() => setMostraTermini(true)}
+          onScegliTermini={() => void importaTermini()}
           onScegliCartellaExport={() => {
             void (async () => {
               const d = await ponte.scegliCartella();
@@ -406,22 +513,21 @@ export default function App() {
               if (d) void cambiaImpostazioni({ ...impostazioni, cartella_modelli: d });
             })();
           }}
-          onScarica={() => {
-            void (async () => {
-              setScaricando(true);
-              try {
-                setModelli(await ponte.scaricaModelli());
-              } catch (e) {
-                setStato({ tono: "errore", testo: String(e) });
-              } finally {
-                setScaricando(false);
-              }
-            })();
-          }}
+          onScarica={() => void scaricaModelli()}
           onRitrascrivi={() => {
             setImpostazioniSalvate(impostazioni);
             if (file) void carica(file.percorso);
           }}
+        />
+      )}
+
+      {mostraTermini && (
+        <Termini
+          iniziali={termini?.termini ?? []}
+          percorso={termini?.percorso ?? "—"}
+          onSalva={(elenco) => void salvaTermini(elenco)}
+          onChiudi={() => setMostraTermini(false)}
+          onImporta={() => void importaTermini()}
         />
       )}
 

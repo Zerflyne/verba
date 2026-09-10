@@ -66,7 +66,7 @@ pub struct Info {
 #[tauri::command]
 pub fn informazioni(stato: State<'_, Stato>) -> Info {
     let i = stato.impostazioni.lock().unwrap();
-    let device = gpu::select(gpu::DEFAULT_MIN_VRAM_MIB, i.solo_cpu(), None);
+    let device = gpu::select(i.soglia_vram_mib(), i.solo_cpu(), i.gpu_preferita());
     Info {
         versione: env!("CARGO_PKG_VERSION"),
         repository: env!("CARGO_PKG_REPOSITORY"),
@@ -198,6 +198,92 @@ pub async fn scarica_modelli(app: AppHandle, stato: State<'_, Stato>) -> Esito<S
     Ok(leggi_stato_modelli(&cartella, dimensione))
 }
 
+/// Le GPU fra cui si puo' scegliere in Impostazioni.
+///
+/// Un elenco vuoto non e' un errore: e' una macchina senza schede NVIDIA, e
+/// l'interfaccia lo dice invece di mostrare un menu a tendina vuoto.
+#[tauri::command]
+pub fn gpu_disponibili() -> Vec<SchedaVista> {
+    gpu::elenco()
+        .into_iter()
+        .map(|s| SchedaVista {
+            etichetta: s.etichetta(),
+            indice: s.indice,
+            nome: s.nome,
+            totale_mib: s.totale_mib,
+            libera_mib: s.libera_mib,
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+pub struct SchedaVista {
+    pub indice: u32,
+    pub nome: String,
+    pub totale_mib: u64,
+    pub libera_mib: u64,
+    /// La riga gia' composta, cosi' la finestra non ricompone i numeri.
+    pub etichetta: String,
+}
+
+// ----------------------------------------------------------- termini noti
+
+#[derive(Serialize)]
+pub struct TerminiVisti {
+    /// Il file da cui vengono, o dove finirebbero salvandoli.
+    percorso: String,
+    /// Vero se quel file esiste gia'.
+    esiste: bool,
+    termini: Vec<String>,
+}
+
+fn dove_stanno_i_termini(stato: &Stato) -> PathBuf {
+    stato
+        .impostazioni
+        .lock()
+        .unwrap()
+        .termini
+        .clone()
+        .unwrap_or_else(prompt::percorso_predefinito)
+}
+
+/// I termini noti, per l'editor.
+#[tauri::command]
+pub fn termini(stato: State<'_, Stato>) -> Esito<TerminiVisti> {
+    let percorso = dove_stanno_i_termini(&stato);
+    let esiste = percorso.is_file();
+    let termini = if esiste {
+        prompt::load_terms(&percorso, None, None).map_err(riga)?
+    } else {
+        Vec::new()
+    };
+    Ok(TerminiVisti { percorso: percorso.display().to_string(), esiste, termini })
+}
+
+/// Salva l'elenco e lo rende quello in uso.
+///
+/// Salvare un elenco vuoto non cancella il file: lo lascia vuoto e stacca
+/// l'impostazione. Cancellare il file di qualcun altro perche' ha svuotato una
+/// lista a schermo sarebbe una sorpresa sgradevole.
+#[tauri::command]
+pub fn termini_salva(elenco: Vec<String>, stato: State<'_, Stato>) -> Esito<TerminiVisti> {
+    let percorso = dove_stanno_i_termini(&stato);
+    prompt::scrivi_termini(&percorso, &elenco).map_err(riga)?;
+    {
+        let mut i = stato.impostazioni.lock().unwrap();
+        let usalo = if elenco.is_empty() { None } else { Some(percorso.clone()) };
+        if i.termini != usalo {
+            i.termini = usalo;
+            i.salva().map_err(riga)?;
+        }
+    }
+    Ok(TerminiVisti {
+        percorso: percorso.display().to_string(),
+        esiste: true,
+        termini: elenco,
+    })
+}
+
 // ------------------------------------------------------------------ il file
 
 #[tauri::command]
@@ -261,7 +347,11 @@ async fn trascrivi_davvero(app: AppHandle, stato: &State<'_, Stato>) -> Esito<Ri
     .map_err(riga)?;
 
     let thread = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 32);
-    let device = gpu::select(gpu::DEFAULT_MIN_VRAM_MIB, impostazioni.solo_cpu(), None);
+    let device = gpu::select(
+        impostazioni.soglia_vram_mib(),
+        impostazioni.solo_cpu(),
+        impostazioni.gpu_preferita(),
+    );
 
     let cfg = ConfigTrascrizione {
         modelli: percorsi,
@@ -357,6 +447,20 @@ pub fn fotogramma(t: f64, stato: State<'_, Stato>) -> Esito<Response> {
     let s = guardia.as_mut().ok_or_else(|| "non c'e' nessun file aperto".to_string())?;
     let pixel = s.fotogramma(t).map_err(riga)?;
     Ok(Response::new(pixel.to_vec()))
+}
+
+/// Il WAV temporaneo da dare all'elemento `<audio>` della finestra.
+///
+/// Non si passa il file di partenza: la webview non sa suonare tutto quello
+/// che Verba sa aprire, e per un `.mkv` o un `.opus` resterebbe muta senza
+/// dire perche'. Il WAV viene dal PCM gia' decodificato, quindi si ascolta
+/// esattamente cio' su cui hanno lavorato i modelli.
+#[tauri::command]
+pub fn traccia_audio(stato: State<'_, Stato>) -> Esito<String> {
+    let mut guardia = stato.sessione.lock().unwrap();
+    let s = guardia.as_mut().ok_or_else(|| "non c'e' nessun file aperto".to_string())?;
+    let percorso = s.traccia_audio().map_err(riga)?;
+    Ok(percorso.display().to_string())
 }
 
 #[tauri::command]

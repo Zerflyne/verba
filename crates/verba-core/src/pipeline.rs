@@ -7,10 +7,16 @@
 //! manifesterebbe come un risultato che cambia a seconda di come lo hai
 //! chiesto.
 //!
-//! L'ordine dei modelli non e' negoziabile: **Whisper viene scaricato dalla
-//! memoria prima che l'allineatore venga caricato**. I due insieme non stanno
-//! in 8 GB di VRAM, e se la sequenza non e' esplicita l'errore che ne esce
-//! sembra casuale.
+//! L'ordine dei modelli e' esplicito: **Whisper viene scaricato dalla memoria
+//! prima che l'allineatore venga caricato**, perche' su una scheda da 8 GB i
+//! due insieme non ci stanno e l'errore che ne uscirebbe sembra casuale.
+//!
+//! La staffetta pero' costa: scarico, ricarico, e nel mezzo il driver deve
+//! liberare. Dove la memoria abbonda non serve, e [`crate::memoria`] misura
+//! prima di decidere — se il libero supera del 20% la somma stimata dei due
+//! modelli, restano caricati entrambi. La decisione finisce nel log con i
+//! numeri che l'hanno prodotta, cosi' non si e' costretti a indovinare quale
+//! delle due strade sia stata presa.
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +28,7 @@ use crate::audio::Pcm;
 use crate::eventi::{Fase, Progresso};
 use crate::cartelle;
 use crate::gpu::{self, Device};
+use crate::memoria;
 use crate::modelli::{self, Dimensione};
 use crate::onnx;
 use crate::segmentation::{self, SegmentationConfig, Segmenter};
@@ -183,29 +190,38 @@ pub fn trascrivi(
     }
 
     // ------------------------------------------------------------- fase 2
-    // Trascrizione.
+    // Trascrizione. La decisione sulla memoria si prende adesso, prima di
+    // caricare Whisper: e' l'ultimo momento in cui i contatori dicono la
+    // verita' su quanto c'e' di libero.
+    let dimensione = Dimensione::dal_file(&cfg.modelli.whisper);
+    let memoria = memoria::decidi(device, dimensione);
+
+    let mut transcriber = Transcriber::new(&cfg.modelli.whisper, device, cfg.whisper.clone())
+        .context("inizializzazione di Whisper")?;
     let testi = {
         let _c = progresso.inizia(Fase::Trascrizione);
-        let mut transcriber = Transcriber::new(&cfg.modelli.whisper, device, cfg.whisper.clone())
-            .context("inizializzazione di Whisper")?;
-        let t = transcriber.run(pcm, &segmenti)?;
-
-        // *** Whisper esce dalla memoria PRIMA che entri l'allineatore. ***
-        transcriber.release();
-        drop(transcriber);
-        t
+        transcriber.run(pcm, &segmenti)?
     };
+
+    // *** Se i due non ci stanno insieme, Whisper esce dalla memoria PRIMA
+    // che entri l'allineatore. *** Se ci stanno, resta dov'e'.
+    if !memoria.insieme {
+        transcriber.release();
+    } else {
+        progresso.avviso(memoria.spiegazione());
+    }
     progresso.verifica()?;
 
     if testi.iter().all(|t| t.text.trim().is_empty()) {
         let messaggio = "nessun parlato riconosciuto nell'audio".to_string();
         warn!("{messaggio}");
         progresso.avviso(messaggio);
+        transcriber.release();
         return Ok(Trascrizione::vuota(pcm.duration_secs()));
     }
 
     // ------------------------------------------------------------- fase 3
-    // Allineamento forzato: ora la memoria e' libera.
+    // Allineamento forzato.
     let trascrizione = {
         let _c = progresso.inizia(Fase::Allineamento);
         let mut aligner = Aligner::new(
@@ -220,6 +236,10 @@ pub fn trascrivi(
         drop(aligner);
         t
     };
+
+    // Qui Whisper esce comunque: o e' gia' uscito, e questa e' una chiamata a
+    // vuoto, o era rimasto caricato e adesso non serve piu'.
+    transcriber.release();
     progresso.verifica()?;
 
     gpu::log_vram(device, "finale");

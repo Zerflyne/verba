@@ -21,7 +21,9 @@ import type {
   ParolaVista,
   Preset,
   Riepilogo,
+  SchedaVista,
   StatoModelli,
+  TerminiVisti,
 } from "./tipi";
 
 const TESTO =
@@ -111,6 +113,7 @@ let impostazioniFinte: Impostazioni = {
   modello: "large-v3",
   lingua: "it",
   dispositivo: "automatico",
+  gpu: null,
   termini: null,
   soglia: 0.5,
   cartella_export: null,
@@ -118,6 +121,12 @@ let impostazioniFinte: Impostazioni = {
   caratteri_aggiunti: [],
   caratteri_di_sistema: false,
   ultimo_formato: null,
+};
+
+let terminiFinti: TerminiVisti = {
+  percorso: "~/.local/share/verba/termini.csv",
+  esiste: true,
+  termini: ["Federico Costantini", "Anthropic", "Zerflyne", "whisper.cpp", "wav2vec2"],
 };
 
 const CARATTERI: Famiglia[] = [
@@ -144,6 +153,36 @@ const MODELLI: StatoModelli = {
     m("allineamento", "wav2vec2-italian (CTC)", "1.2 GB", true, true, "Da' il tempo esatto di ogni parola."),
   ],
 };
+
+/** Lo stesso elenco, ma con i modelli non ancora scaricati.
+ *
+ *  Si chiede con `?modelli=mancanti`, ed e' l'unico modo di guardare la
+ *  scheda d'avviso senza cancellare per davvero tre gigabyte di file. */
+const MODELLI_MANCANTI: StatoModelli = {
+  cartella: "~/.local/share/verba/models",
+  pronto: false,
+  da_scaricare: 3_101_000_000,
+  da_scaricare_leggibile: "2,9 GB",
+  a_mano: [
+    "wav2vec2-italian (CTC) va esportato a mano:\n" +
+      "  python scripts/export_models.py --w2v",
+  ],
+  modelli: [
+    m("large-v3", "Whisper large-v3", "2.9 GB", false, true, "Il modello di trascrizione. Formato GGML per whisper.cpp."),
+    m("medium", "Whisper medium", "1.4 GB", false, false, "Trascrizione a meta' strada fra qualita' e velocita'."),
+    m("small", "Whisper small", "465 MB", false, false, "Trascrizione rapida, per una bozza o per una macchina modesta."),
+    m("segmentazione", "pyannote segmentation 3.0", "5.7 MB", false, true, "Trova dove c'e' parlato: e' quello che divide l'audio in segmenti."),
+    m("vocabolario", "Vocabolario wav2vec2-italian", "410 B", true, true, "Da qui il programma deduce blank CTC e delimitatore di parola."),
+    m("allineamento", "wav2vec2-italian (CTC)", "1.2 GB", false, true, "Da' il tempo esatto di ogni parola."),
+  ],
+};
+
+/** Quale dei due elenchi mostrare, secondo l'indirizzo. */
+function modelliDaMostrare(): StatoModelli {
+  return new URLSearchParams(window.location.search).get("modelli") === "mancanti"
+    ? MODELLI_MANCANTI
+    : MODELLI;
+}
 
 function m(
   id: string,
@@ -257,10 +296,40 @@ export async function bancoDiProva<T>(
       impostazioniFinte = argomenti!.nuove as Impostazioni;
       return q(undefined);
     case "stato_modelli":
-      return q(MODELLI);
+      return q(modelliDaMostrare());
+    case "gpu_disponibili":
+      return q([
+        {
+          indice: 0,
+          nome: "NVIDIA GeForce RTX 4060",
+          totale_mib: 8188,
+          libera_mib: 7421,
+          etichetta: "CUDA:0 — NVIDIA GeForce RTX 4060, 8188 MiB",
+        },
+        {
+          indice: 1,
+          nome: "Tesla P40",
+          totale_mib: 23040,
+          libera_mib: 22901,
+          etichetta: "CUDA:1 — Tesla P40, 23040 MiB",
+        },
+      ] satisfies SchedaVista[]);
+    case "termini":
+      return q(terminiFinti);
+    case "termini_salva":
+      terminiFinti = {
+        percorso: terminiFinti.percorso,
+        esiste: true,
+        termini: argomenti!.elenco as string[],
+      };
+      return q(terminiFinti);
     case "scarica_modelli":
       await fase("scaricamento", 1400);
       return q(MODELLI);
+    case "traccia_audio":
+      // Il banco non ha un file da suonare: `sorgenteAudio` non arriva
+      // nemmeno qui, ma se ci arrivasse deve dirlo invece di mentire.
+      throw new Error("il banco di prova non ha una traccia da riprodurre");
     case "apri":
       await fase("preparazione", 350);
       return q(DESCRIZIONE);

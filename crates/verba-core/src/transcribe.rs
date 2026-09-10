@@ -152,12 +152,17 @@ impl Transcriber {
         Ok(out)
     }
 
-    /// **Scarica Whisper dalla GPU.** Va chiamata prima di istanziare
-    /// l'allineatore: il `Drop` di `WhisperContext` libera i pesi dalla VRAM.
+    /// **Scarica Whisper dalla GPU.** Il `Drop` di `WhisperContext` libera i
+    /// pesi dalla VRAM.
+    ///
+    /// Va chiamata prima di istanziare l'allineatore quando i due non stanno
+    /// insieme in memoria; quando ci stanno la si chiama comunque alla fine,
+    /// e allora questa e' una chiamata a vuoto che ritorna subito.
     pub fn release(&mut self) {
-        if self.ctx.take().is_some() {
-            info!("Whisper scaricato dalla memoria del dispositivo");
+        if self.ctx.take().is_none() {
+            return;
         }
+        info!("Whisper scaricato dalla memoria del dispositivo");
         // La deallocazione asincrona del driver puo' impiegare qualche
         // millisecondo a riflettersi nei contatori NVML.
         std::thread::sleep(std::time::Duration::from_millis(300));

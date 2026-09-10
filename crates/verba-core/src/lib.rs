@@ -23,7 +23,9 @@
 //! * [`video`] — esportazione del filmato dei sottotitoli;
 //! * [`srt`] — generazione dei sottotitoli testuali (uscita accessoria);
 //! * [`eventi`] — avanzamento per fasi e annullamento;
-//! * [`gpu`] — selezione del dispositivo e monitoraggio VRAM.
+//! * [`gpu`] — elenco e selezione del dispositivo, monitoraggio VRAM;
+//! * [`memoria`] — quanta ne serve, e se basta per tenere caricati insieme
+//!   Whisper e l'allineatore.
 
 pub mod align;
 pub mod audio;
@@ -35,6 +37,7 @@ pub mod gpu;
 pub mod impostazioni;
 pub mod layout;
 pub mod media;
+pub mod memoria;
 pub mod modelli;
 pub mod onnx;
 pub mod pipeline;

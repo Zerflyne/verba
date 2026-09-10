@@ -1,10 +1,18 @@
 /** Riproduzione, posizione, durata e forma d'onda.
  *
- *  Non c'e' un lettore audio: la riproduzione fa avanzare il tempo, e cio' che
- *  si vede e' l'anteprima ridisegnata. Nella 0.1 e' quello che serve — si
- *  guarda se i sottotitoli cadono al momento giusto, non si ascolta. */
+ *  L'audio si sente davvero: il motore scrive un WAV temporaneo dal PCM gia'
+ *  decodificato e qui lo suona un `<audio>` nascosto. Non si passa il file di
+ *  partenza perche' la webview non sa suonare tutto quello che Verba sa
+ *  aprire — di un `.mkv` o di un `.opus` resterebbe muta senza dire perche'.
+ *
+ *  Quando l'audio c'e', **e' lui l'orologio**: la posizione mostrata e' la sua
+ *  `currentTime`, non un contatore parallelo. Due orologi distinti sullo
+ *  stesso nastro divergono sempre, e la deriva si vedrebbe proprio dove non
+ *  deve — nei sottotitoli che arrivano un attimo prima o dopo la voce. Senza
+ *  audio (il banco di prova nel browser) resta il contatore, che e' l'unica
+ *  cosa che ci sia da far scorrere. */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pausa, Play } from "./icone";
 import { orologio } from "./controlli";
 
@@ -17,7 +25,14 @@ interface Props {
   onda?: number[];
   /** L'intervallo del blocco attualmente a schermo, da colorare nell'onda. */
   bloccoAttivo?: [number, number] | null;
+  /** L'indirizzo della traccia da suonare; senza, il trasporto e' muto. */
+  audio?: string | null;
 }
+
+/** Oltre questo scarto fra posizione mostrata e posizione dell'audio si tratta
+ *  di un salto voluto — un clic sull'onda — e non della normale deriva di un
+ *  fotogramma. */
+const SALTO = 0.25;
 
 export function Trasporto({
   tempo,
@@ -27,37 +42,80 @@ export function Trasporto({
   onRiproduzione,
   onda,
   bloccoAttivo,
+  audio,
 }: Props) {
+  const elemento = useRef<HTMLAudioElement>(null);
   const ultimo = useRef(0);
+  /** L'ultima posizione che abbiamo emesso noi: serve a distinguere un salto
+   *  chiesto da fuori dal normale avanzare della riproduzione. */
+  const emesso = useRef(0);
+  const [muto, setMuto] = useState(false);
+  const [errore, setErrore] = useState<string | null>(null);
 
-  // L'orologio della riproduzione: avanza in tempo reale e si ferma alla fine.
+  // Avvio e arresto. `tempo` non e' fra le dipendenze: entrarci rimetterebbe
+  // in moto l'audio a ogni fotogramma.
+  useEffect(() => {
+    const a = elemento.current;
+    if (!a || !audio) return;
+    if (inRiproduzione) {
+      if (Math.abs(a.currentTime - tempo) > SALTO) a.currentTime = tempo;
+      void a.play().catch((e) => setErrore(String(e)));
+    } else {
+      a.pause();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inRiproduzione, audio]);
+
+  // Un salto chiesto da fuori (un clic sull'onda, una parola della striscia).
+  useEffect(() => {
+    const a = elemento.current;
+    if (!a || !audio) return;
+    if (Math.abs(tempo - emesso.current) > SALTO) {
+      a.currentTime = tempo;
+      emesso.current = tempo;
+    }
+  }, [tempo, audio]);
+
+  // L'orologio della riproduzione.
   useEffect(() => {
     if (!inRiproduzione) return;
+    const a = audio ? elemento.current : null;
     ultimo.current = performance.now();
     let vivo = true;
     let t = tempo;
+    let id = 0;
+
     const passo = () => {
       if (!vivo) return;
-      const ora = performance.now();
-      t += (ora - ultimo.current) / 1000;
-      ultimo.current = ora;
-      if (t >= durata) {
-        onTempo(durata);
-        onRiproduzione(false);
-        return;
+      if (a) {
+        t = a.currentTime;
+        if (a.ended || t >= durata) {
+          onTempo(durata);
+          onRiproduzione(false);
+          return;
+        }
+      } else {
+        const ora = performance.now();
+        t += (ora - ultimo.current) / 1000;
+        ultimo.current = ora;
+        if (t >= durata) {
+          onTempo(durata);
+          onRiproduzione(false);
+          return;
+        }
       }
+      emesso.current = t;
       onTempo(t);
-      requestAnimationFrame(passo);
+      id = requestAnimationFrame(passo);
     };
-    const id = requestAnimationFrame(passo);
+
+    id = requestAnimationFrame(passo);
     return () => {
       vivo = false;
       cancelAnimationFrame(id);
     };
-    // `tempo` non e' fra le dipendenze apposta: entrarci farebbe ripartire
-    // l'orologio a ogni fotogramma.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inRiproduzione, durata]);
+  }, [inRiproduzione, durata, audio]);
 
   const vaiA = (e: React.MouseEvent<HTMLElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -68,6 +126,20 @@ export function Trasporto({
 
   return (
     <>
+      {audio && (
+        <audio
+          ref={elemento}
+          src={audio}
+          preload="auto"
+          muted={muto}
+          onError={() =>
+            // Un audio che non parte e non dice niente e' il difetto piu'
+            // difficile da capire: qui almeno si legge che e' successo.
+            setErrore("la traccia d'anteprima non si e' caricata")
+          }
+          onPlaying={() => setErrore(null)}
+        />
+      )}
       <div className="trasporto">
         <button
           className="riproduci"
@@ -82,7 +154,17 @@ export function Trasporto({
         <span className="scorrimento" onMouseDown={vaiA} onClick={vaiA}>
           <i style={{ width: `${(q * 100).toFixed(2)}%` }} />
         </span>
+        {audio && (
+          <button
+            className="riproduci piccolo"
+            onClick={() => setMuto(!muto)}
+            title={muto ? "Riattiva l'audio" : "Togli l'audio"}
+          >
+            {muto ? "🔇" : "🔊"}
+          </button>
+        )}
       </div>
+      {errore && <p className="nota errore-audio">{errore}</p>}
       {onda && onda.length > 0 && (
         <FormaOnda
           onda={onda}

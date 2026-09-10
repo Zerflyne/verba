@@ -120,6 +120,8 @@ export interface Impostazioni {
   modello: Dimensione;
   lingua: string;
   dispositivo: Dispositivo;
+  /** Indice CUDA scelto a mano, oppure null per lasciar decidere Verba. */
+  gpu: number | null;
   termini: string | null;
   soglia: number;
   cartella_export: string | null;
@@ -127,6 +129,20 @@ export interface Impostazioni {
   caratteri_aggiunti: string[];
   caratteri_di_sistema: boolean;
   ultimo_formato: string | null;
+}
+
+export interface SchedaVista {
+  indice: number;
+  nome: string;
+  totale_mib: number;
+  libera_mib: number;
+  etichetta: string;
+}
+
+export interface TerminiVisti {
+  percorso: string;
+  esiste: boolean;
+  termini: string[];
 }
 
 export interface ModelloVisto {

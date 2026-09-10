@@ -241,6 +241,43 @@ pub fn load_terms(
     Ok(out)
 }
 
+/// Il CSV dei termini che Verba tiene di suo, per chi non ne ha gia' uno.
+///
+/// L'editor integrato deve poter salvare anche quando nessun file e' mai stato
+/// scelto: senza un posto predefinito, il primo termine scritto costringerebbe
+/// a passare da una finestra di salvataggio, che e' esattamente l'attrito che
+/// l'editor esiste per togliere.
+pub fn percorso_predefinito() -> PathBuf {
+    crate::cartelle::dati().join("termini.csv")
+}
+
+/// Scrive l'elenco dei termini, uno per riga.
+///
+/// Una colonna sola e virgolette dove servono: il file resta leggibile da
+/// [`load_terms`], da un foglio di calcolo e da un essere umano.
+pub fn scrivi_termini(path: &Path, termini: &[String]) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("creazione di {}", dir.display()))?;
+        }
+    }
+    let mut w = csv::WriterBuilder::new()
+        .delimiter(b',')
+        .from_path(path)
+        .with_context(|| format!("scrittura di {}", path.display()))?;
+    for t in termini {
+        let t = t.trim();
+        if t.is_empty() {
+            continue;
+        }
+        w.write_record([t]).with_context(|| format!("scrittura di {}", path.display()))?;
+    }
+    w.flush().with_context(|| format!("chiusura di {}", path.display()))?;
+    info!(file = %path.display(), termini = termini.len(), "vocabolario CSV salvato");
+    Ok(())
+}
+
 /// Deduce il delimitatore contando le occorrenze nella prima riga utile.
 fn detect_delimiter(raw: &str) -> u8 {
     let line = raw
@@ -376,6 +413,29 @@ mod tests {
     #[test]
     fn nessuna_configurazione_nessun_prompt() {
         assert!(build(&PromptConfig::default()).unwrap().is_none());
+    }
+
+    #[test]
+    fn scritti_e_riletti_i_termini_sono_gli_stessi() {
+        let p = std::env::temp_dir().join("verba_test_giro.csv");
+        let termini = vec![
+            "Anthropic".to_string(),
+            "Milano, Italia".to_string(),
+            "Zerflyne".to_string(),
+        ];
+        scrivi_termini(&p, &termini).unwrap();
+        // La virgola dentro un termine deve sopravvivere al giro: e' il caso
+        // per cui esistono le virgolette.
+        assert_eq!(load_terms(&p, None, None).unwrap(), termini);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn le_righe_vuote_non_finiscono_nel_file() {
+        let p = std::env::temp_dir().join("verba_test_vuote.csv");
+        scrivi_termini(&p, &["Uno".into(), "  ".into(), "".into(), "Due".into()]).unwrap();
+        assert_eq!(load_terms(&p, None, None).unwrap(), vec!["Uno", "Due"]);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]

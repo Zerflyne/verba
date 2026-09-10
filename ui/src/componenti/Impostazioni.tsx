@@ -5,7 +5,7 @@
  *  quando ce ne sono di pendenti compare in fondo la barra che lo dice, con il
  *  pulsante che riporta alla sezione 1. */
 
-import type { Impostazioni as Dati, Info, StatoModelli } from "../tipi";
+import type { Impostazioni as Dati, Info, SchedaVista, StatoModelli } from "../tipi";
 import { Cursore, Gruppo, Interruttore, Riga, Scelta } from "./controlli";
 import * as Icone from "./icone";
 
@@ -16,8 +16,11 @@ interface Props {
   scaricando: boolean;
   frazioneScarico: number;
   pendenti: boolean;
+  /** Le GPU fra cui scegliere. Vuoto = nessuna scheda NVIDIA su questa macchina. */
+  gpu: SchedaVista[];
   terminiLetti: { quanti: number; primi: string[] } | null;
   onCambia: (d: Dati) => void;
+  onTermini: () => void;
   onScegliTermini: () => void;
   onScegliCartellaExport: () => void;
   onScegliCartellaModelli: () => void;
@@ -86,15 +89,68 @@ export function Impostazioni(p: Props) {
                 onChange={(v) => cambia({ dispositivo: v })}
               />
             </Riga>
-            <Riga etichetta="Termini noti">
-              <button className="pulsante" onClick={p.onScegliTermini}>
+
+            {/* Con piu' schede la scelta automatica prende quella con piu'
+              * VRAM, che non e' sempre quella che si vuole: la piu' capiente
+              * puo' essere anche la piu' vecchia e la piu' lenta. */}
+            {p.dati.dispositivo !== "cpu" && (
+              <>
+                <Riga
+                  etichetta="Scheda"
+                  spiegazione={
+                    p.gpu.length === 0
+                      ? "Nessuna GPU NVIDIA visibile su questa macchina: si lavora su CPU."
+                      : "Automatica prende quella con piu' memoria, che non e' sempre la piu' veloce."
+                  }
+                >
+                  <select
+                    value={p.dati.gpu ?? ""}
+                    disabled={p.gpu.length === 0}
+                    onChange={(e) =>
+                      cambia({ gpu: e.target.value === "" ? null : Number(e.target.value) })
+                    }
+                  >
+                    <option value="">Automatica</option>
+                    {p.gpu.map((g) => (
+                      <option key={g.indice} value={g.indice}>
+                        {g.etichetta}
+                      </option>
+                    ))}
+                  </select>
+                </Riga>
+                {(() => {
+                  // Una riga sola, e sulla scheda che verra' usata davvero:
+                  // ripetere l'elenco sotto il menu a tendina non aggiunge
+                  // niente a chi lo ha appena letto.
+                  const scelta =
+                    p.dati.gpu === null
+                      ? [...p.gpu].sort((a, b) => b.totale_mib - a.totale_mib)[0]
+                      : p.gpu.find((g) => g.indice === p.dati.gpu);
+                  if (!scelta) return null;
+                  return (
+                    <p className="spiegazione">
+                      {p.dati.gpu === null ? "Verrebbe usata: " : "In uso: "}
+                      {scelta.nome} · {scelta.libera_mib} MiB liberi su {scelta.totale_mib}
+                    </p>
+                  );
+                })()}
+              </>
+            )}
+
+            <Riga
+              etichetta="Termini noti"
+              spiegazione="Nomi propri, sigle e parole tecniche suggerite al modello prima della trascrizione. Cambiarli richiede una nuova trascrizione."
+            >
+              <button className="pulsante" onClick={p.onTermini}>
                 <Icone.File />
-                {p.dati.termini ? "Cambia CSV" : "Carica un CSV"}
+                {p.terminiLetti && p.terminiLetti.quanti > 0
+                  ? `Modifica (${p.terminiLetti.quanti})`
+                  : "Aggiungi termini"}
               </button>
             </Riga>
-            {p.terminiLetti && (
+            {p.terminiLetti && p.terminiLetti.quanti > 0 && (
               <p className="spiegazione">
-                {p.terminiLetti.quanti} termini letti: {p.terminiLetti.primi.join(", ")}
+                {p.terminiLetti.primi.join(", ")}
                 {p.terminiLetti.quanti > p.terminiLetti.primi.length ? "…" : ""}
               </p>
             )}

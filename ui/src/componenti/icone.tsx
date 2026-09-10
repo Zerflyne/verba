@@ -1,7 +1,7 @@
 /** Le icone: tratto 1,5 px, nessun riempimento, nessun colore proprio.
  *
  *  Sono disegnate qui invece di arrivare da una libreria per due motivi: sono
- *  sei, e una libreria di icone porta con se' migliaia di percorsi che non
+ *  una dozzina, e una libreria di icone porta con se' migliaia di percorsi che non
  *  servono e uno stile che non e' questo. */
 
 interface Props {
@@ -84,6 +84,38 @@ export const Pausa = ({ size = 15 }: Props) => (
 export const Cartella = ({ size = 15 }: Props) => (
   <svg {...comuni(size)}>
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+  </svg>
+);
+
+export const Chiudi = ({ size = 15 }: Props) => (
+  <svg {...comuni(size)}>
+    <path d="M6 6l12 12M18 6L6 18" />
+  </svg>
+);
+
+export const Piu = ({ size = 15 }: Props) => (
+  <svg {...comuni(size)}>
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+);
+
+export const Meno = ({ size = 15 }: Props) => (
+  <svg {...comuni(size)}>
+    <path d="M5 12h14" />
+  </svg>
+);
+
+export const Avviso = ({ size = 18 }: Props) => (
+  <svg {...comuni(size)}>
+    <path d="M12 3.5 2.5 20h19L12 3.5z" />
+    <path d="M12 10v4.5M12 17.2v.1" />
+  </svg>
+);
+
+export const Scarica = ({ size = 15 }: Props) => (
+  <svg {...comuni(size)}>
+    <path d="M12 4v11M8 11l4 4 4-4" />
+    <path d="M4 19h16" />
   </svg>
 );
 

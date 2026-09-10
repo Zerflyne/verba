@@ -455,14 +455,17 @@ select {
   display: block;
   max-width: 100%;
   max-height: 100%;
-  /* La scacchiera si vede solo dove il fotogramma e' trasparente: e' il caso
-   * di un file audio, dove i sottotitoli sono soli. */
-  background-image: linear-gradient(45deg, #1b1b1b 25%, transparent 25%),
-    linear-gradient(-45deg, #1b1b1b 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #1b1b1b 75%),
-    linear-gradient(-45deg, transparent 75%, #1b1b1b 75%);
-  background-size: 16px 16px;
-  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+/* Un file di solo audio non ha un filmato sotto, e il fotogramma e'
+ * trasparente ovunque tranne dove ci sono i sottotitoli. A schermo lo si
+ * guarda su nero — com'e' in un montaggio — e non su una scacchiera, che
+ * dice "trasparente" ma non dice niente su come verranno i sottotitoli.
+ * La trasparenza resta intera nel file esportato: e' il fondo dell'anteprima
+ * a essere nero, non i pixel. */
+.anteprima.su-nero,
+.anteprima.su-nero canvas {
+  background: #000;
 }
 
 .guide {
@@ -974,4 +977,206 @@ select {
 
 .errore {
   color: var(--err);
+}
+
+/* -------------------------------------------------- consiglio e avvisi */
+
+/* La riga dei termini noti sotto l'area di trascinamento. Ha il peso di un
+ * consiglio, non di un errore: si puo' ignorare, ma va vista prima di
+ * caricare, perche' applicarli dopo vuol dire ritrascrivere. */
+.suggerimento {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  max-width: 640px;
+  margin-top: 26px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--raggio);
+  background: var(--surface);
+}
+
+.etichetta-consiglio {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--lilac);
+  background: var(--accent-soft);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+}
+
+.testo-consiglio {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.testo-consiglio strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.testo-consiglio span {
+  font-size: 11.5px;
+  color: var(--dim);
+  line-height: 1.45;
+}
+
+.suggerimento .a-destra {
+  margin-left: auto;
+  flex: none;
+}
+
+/* Quando mancano i modelli questa scheda prende il posto dell'area di
+ * trascinamento: e' il problema, ed e' anche dove si risolve. */
+.scheda-avviso {
+  width: 100%;
+  max-width: 640px;
+  padding: 26px 28px 24px;
+  border: 1px solid var(--warn);
+  border-radius: var(--raggio-grande);
+  background: var(--surface);
+}
+
+.testata-avviso {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--warn);
+}
+.testata-avviso h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.errore-audio {
+  color: var(--err);
+  margin: 6px 0 0;
+}
+
+.riproduci.piccolo {
+  width: 30px;
+  height: 30px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* ------------------------------------------------- il pannello dei termini */
+
+.velo {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+.pannello {
+  width: 560px;
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px 24px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--raggio-grande);
+  background: var(--surface);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+
+.pannello-testata {
+  display: flex;
+  align-items: center;
+}
+.pannello-testata h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+}
+.pannello-testata .pulsante {
+  margin-left: auto;
+}
+
+.pannello .spiegazione {
+  grid-column: auto;
+  margin: 0;
+  font-size: 11.5px;
+}
+
+.elenco-termini {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--raggio);
+  background: var(--bg);
+}
+
+.riga-termine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.riga-termine input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.riga-termine input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.riga-termine .pulsante {
+  flex: none;
+  padding: 6px 8px;
+}
+
+.pannello .bottoni-in-fila {
+  justify-content: flex-start;
+}
+
+.pannello-piede {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.pannello-piede .conteggio {
+  font-size: 11.5px;
+  color: var(--dim);
+  flex: none;
+}
+.pannello-piede .percorso {
+  font-size: 11px;
+  color: var(--dim);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  min-width: 0;
+}
+.pannello-piede .a-destra {
+  margin-left: auto;
+  flex: none;
 }

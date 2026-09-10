@@ -592,3 +592,91 @@ mod tests {
         assert!(mean.abs() < 1e-5);
     }
 }
+
+/// Scrive il PCM come WAV a 16 bit, mono, alla frequenza che ha.
+///
+/// Serve alla riproduzione nell'anteprima: la webview sa suonare un WAV
+/// qualunque sia il formato di partenza, mentre di un `.mkv` o di un `.opus`
+/// non c'e' garanzia. Passare dal PCM gia' decodificato ha anche il pregio di
+/// far ascoltare **esattamente** l'audio su cui i modelli hanno lavorato.
+pub fn scrivi_wav(pcm: &Pcm, dove: &Path) -> Result<()> {
+    let canali: u16 = 1;
+    let bit: u16 = 16;
+    let byte_per_campione = (bit / 8) as u32;
+    let dati = pcm.samples.len() as u32 * byte_per_campione;
+    let byte_al_secondo = pcm.sample_rate * canali as u32 * byte_per_campione;
+
+    let file = std::fs::File::create(dove)
+        .with_context(|| format!("creazione di {}", dove.display()))?;
+    let mut w = std::io::BufWriter::new(file);
+
+    w.write_all(b"RIFF")?;
+    w.write_all(&(36 + dati).to_le_bytes())?;
+    w.write_all(b"WAVEfmt ")?;
+    w.write_all(&16u32.to_le_bytes())?; // dimensione del blocco fmt
+    w.write_all(&1u16.to_le_bytes())?; // PCM interi
+    w.write_all(&canali.to_le_bytes())?;
+    w.write_all(&pcm.sample_rate.to_le_bytes())?;
+    w.write_all(&byte_al_secondo.to_le_bytes())?;
+    w.write_all(&(canali * byte_per_campione as u16).to_le_bytes())?;
+    w.write_all(&bit.to_le_bytes())?;
+    w.write_all(b"data")?;
+    w.write_all(&dati.to_le_bytes())?;
+
+    for &c in &pcm.samples {
+        // La normalizzazione puo' aver portato qualche campione oltre 1.0:
+        // senza il clamp il troncamento a i16 lo farebbe girare di segno, e si
+        // sentirebbe come uno schiocco.
+        let v = (c.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+        w.write_all(&v.to_le_bytes())?;
+    }
+    w.flush().with_context(|| format!("scrittura di {}", dove.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod prova_wav {
+    use super::*;
+
+    #[test]
+    fn il_wav_scritto_ha_l_intestazione_giusta() {
+        let pcm = Pcm { samples: vec![0.0, 0.5, -0.5, 1.0], sample_rate: 16_000 };
+        let dove = std::env::temp_dir().join("verba_test_traccia.wav");
+        scrivi_wav(&pcm, &dove).unwrap();
+        let byte = std::fs::read(&dove).unwrap();
+
+        assert_eq!(&byte[0..4], b"RIFF");
+        assert_eq!(&byte[8..12], b"WAVE");
+        // 44 byte di intestazione piu' due byte per campione
+        assert_eq!(byte.len(), 44 + pcm.samples.len() * 2);
+        assert_eq!(u32::from_le_bytes(byte[24..28].try_into().unwrap()), 16_000);
+        assert_eq!(u16::from_le_bytes(byte[22..24].try_into().unwrap()), 1);
+
+        // Il campione a 1.0 non deve girare di segno: e' il difetto che si
+        // sentirebbe come uno schiocco a ogni picco.
+        let ultimo = i16::from_le_bytes(byte[50..52].try_into().unwrap());
+        assert!(ultimo > 32_000, "campione a fondo scala diventato {ultimo}");
+
+        // E nemmeno quello oltre fondo scala, che la normalizzazione produce.
+        let pcm = Pcm { samples: vec![1.4, -1.4], sample_rate: 16_000 };
+        scrivi_wav(&pcm, &dove).unwrap();
+        let byte = std::fs::read(&dove).unwrap();
+        assert!(i16::from_le_bytes(byte[44..46].try_into().unwrap()) > 32_000);
+        assert!(i16::from_le_bytes(byte[46..48].try_into().unwrap()) < -32_000);
+
+        std::fs::remove_file(&dove).ok();
+    }
+
+    #[test]
+    fn un_wav_scritto_si_rilegge() {
+        // Il giro completo: quello che scriviamo per la finestra deve essere
+        // riapribile dal nostro stesso decodificatore.
+        let pcm = Pcm { samples: (0..1600).map(|i| (i as f32 / 200.0).sin() * 0.8).collect(), sample_rate: 16_000 };
+        let dove = std::env::temp_dir().join("verba_test_giro.wav");
+        scrivi_wav(&pcm, &dove).unwrap();
+        let riletto = load_file(&dove).unwrap();
+        assert_eq!(riletto.sample_rate, 16_000);
+        assert_eq!(riletto.samples.len(), pcm.samples.len());
+        std::fs::remove_file(&dove).ok();
+    }
+}

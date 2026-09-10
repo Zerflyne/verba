@@ -39,6 +39,12 @@ pub struct Impostazioni {
     /// Lingua ISO-639-1, oppure `auto`.
     pub lingua: String,
     pub dispositivo: Dispositivo,
+    /// Quale GPU usare, per indice CUDA. Vuoto = la sceglie Verba.
+    ///
+    /// Su una macchina con piu' schede la scelta automatica prende quella con
+    /// piu' VRAM totale, che non e' sempre quella che si vuole: la piu' grande
+    /// puo' essere anche la piu' vecchia e la piu' lenta.
+    pub gpu: Option<u32>,
     /// Il CSV dei termini noti, se ne e' stato caricato uno.
     pub termini: Option<PathBuf>,
     /// Sotto questa confidenza una parola viene segnalata.
@@ -63,6 +69,7 @@ impl Default for Impostazioni {
             modello: Dimensione::default(),
             lingua: "it".to_string(),
             dispositivo: Dispositivo::default(),
+            gpu: None,
             termini: None,
             soglia: 0.5,
             cartella_export: None,
@@ -146,6 +153,29 @@ impl Impostazioni {
     pub fn solo_cpu(&self) -> bool {
         self.dispositivo == Dispositivo::Cpu
     }
+
+    /// La GPU da usare, se ne e' stata scelta una a mano.
+    ///
+    /// Con `Dispositivo::Cpu` non se ne usa nessuna, qualunque cosa dica il
+    /// campo: la scelta piu' esplicita vince.
+    pub fn gpu_preferita(&self) -> Option<u32> {
+        match self.dispositivo {
+            Dispositivo::Cpu => None,
+            _ => self.gpu,
+        }
+    }
+
+    /// La soglia minima di VRAM da applicare alla scelta automatica.
+    ///
+    /// Con `Dispositivo::Gpu` vale zero: chi ha chiesto la GPU l'ha chiesta, e
+    /// una soglia che gliela negasse in silenzio sarebbe un modo elaborato per
+    /// ignorare un'impostazione.
+    pub fn soglia_vram_mib(&self) -> u64 {
+        match self.dispositivo {
+            Dispositivo::Gpu => 0,
+            _ => crate::gpu::DEFAULT_MIN_VRAM_MIB,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -186,10 +216,31 @@ mod tests {
     }
 
     #[test]
+    fn chiedere_la_gpu_toglie_la_soglia_di_vram() {
+        // Una scheda da 6 GB non passa la soglia automatica: se l'utente ha
+        // scelto "GPU", deve usarla lo stesso.
+        let auto = Impostazioni::default();
+        assert_eq!(auto.soglia_vram_mib(), crate::gpu::DEFAULT_MIN_VRAM_MIB);
+        let voluta = Impostazioni { dispositivo: Dispositivo::Gpu, ..Default::default() };
+        assert_eq!(voluta.soglia_vram_mib(), 0);
+    }
+
+    #[test]
+    fn su_cpu_la_gpu_scelta_a_mano_non_conta() {
+        let i = Impostazioni {
+            dispositivo: Dispositivo::Cpu,
+            gpu: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(i.gpu_preferita(), None);
+    }
+
+    #[test]
     fn il_giro_json_non_perde_niente() {
         let i = Impostazioni {
             lingua: "auto".into(),
             dispositivo: Dispositivo::Cpu,
+            gpu: Some(1),
             ultimo_formato: Some("h264".into()),
             ..Default::default()
         };
