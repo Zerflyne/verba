@@ -21,7 +21,7 @@
 
 use cosmic_text::{Attrs, Buffer, Family, Shaping, SwashCache, SwashContent, Weight};
 
-use crate::layout::{Blocco, LayoutConfig, Posizione, Tipografo};
+use crate::layout::{Allineamento, Blocco, LayoutConfig, Tipografo};
 
 /// Colore RGBA a 8 bit per canale, alfa dritta.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,13 +238,12 @@ impl Rasterizzatore {
         let corpo = self.cfg.corpo();
         let altezza_riga = self.cfg.altezza_riga();
 
-        let margine_v = self.cfg.margine_verticale.clamp(0.0, 0.45) * altezza as f32;
-        let y_riga = match self.cfg.posizione {
-            Posizione::Alto => margine_v,
-            Posizione::Centro => (altezza as f32 - altezza_riga) / 2.0,
-            Posizione::Basso => altezza as f32 - margine_v - altezza_riga,
-        };
-        let x_riga = (larghezza as f32 - blocco.riga.larghezza) / 2.0;
+        // Le righe stanno una sotto l'altra a partire dal bordo superiore del
+        // blocco; la colonna e' quella della configurazione, e dentro la
+        // colonna ogni riga si allinea come richiesto.
+        let y_blocco = self.cfg.riga_y(blocco.righe.len());
+        let colonna_x = self.cfg.colonna_x();
+        let colonna_w = self.cfg.larghezza_utile();
 
         // Buffer di lavoro a dimensione fotogramma: l'indicizzazione resta
         // banale e il costo e' una manciata di megabyte riutilizzati sempre.
@@ -254,72 +253,84 @@ impl Rasterizzatore {
         let mut max_x = 0usize;
         let mut max_y = 0usize;
 
-        // Estremi orizzontali di ogni parola, letti dai glifi effettivamente
-        // posizionati: rimisurare la parola isolata darebbe una larghezza
-        // diversa (crenatura con i vicini, spazi) e il rettangolo si
-        // scosterebbe dal testo.
-        let mut estremi = vec![(f32::INFINITY, f32::NEG_INFINITY); blocco.parole.len()];
+        // Estremi orizzontali di ogni parola e centro verticale della sua
+        // riga, letti dai glifi effettivamente posizionati: rimisurare la
+        // parola isolata darebbe una larghezza diversa (crenatura con i vicini,
+        // spazi) e il rettangolo si scosterebbe dal testo.
+        let mut estremi =
+            vec![(f32::INFINITY, f32::NEG_INFINITY, 0.0f32); blocco.parole.len()];
 
         let attrs = Attrs::new().family(Family::Name(&self.tipografo.famiglia)).weight(Weight::BOLD);
-        self.buffer.set_text(
-            &mut self.tipografo.font_system,
-            &blocco.riga.testo,
-            &attrs,
-            Shaping::Advanced,
-        );
-        self.buffer.shape_until_scroll(&mut self.tipografo.font_system, false);
 
-        for run in self.buffer.layout_runs() {
-            for glifo in run.glyphs.iter() {
-                if let Some(p) = blocco
-                    .riga
-                    .parole
-                    .iter()
-                    .find(|p| p.byte.start <= glifo.start && glifo.start < p.byte.end)
-                {
-                    let e = &mut estremi[p.indice];
-                    // Il riquadro d'avanzamento, non l'inchiostro: e' quello
-                    // che rende uniforme la spaziatura fra rettangolo e testo.
-                    e.0 = e.0.min(x_riga + glifo.x);
-                    e.1 = e.1.max(x_riga + glifo.x + glifo.w);
-                }
+        for (k, riga) in blocco.righe.iter().enumerate() {
+            let y_riga = y_blocco + k as f32 * altezza_riga;
+            let centro_riga = y_riga + altezza_riga / 2.0;
+            let x_riga = match self.cfg.allineamento {
+                Allineamento::Sinistra => colonna_x,
+                Allineamento::Centro => colonna_x + (colonna_w - riga.larghezza) / 2.0,
+                Allineamento::Destra => colonna_x + colonna_w - riga.larghezza,
+            };
 
-                let fisico = glifo.physical((x_riga, y_riga), 1.0);
-                let Some(immagine) =
-                    self.cache.get_image(&mut self.tipografo.font_system, fisico.cache_key)
-                else {
-                    continue;
-                };
-                if immagine.content != SwashContent::Mask {
-                    // Inter e' un font a contorni: niente bitmap a colori.
-                    continue;
-                }
+            self.buffer.set_text(
+                &mut self.tipografo.font_system,
+                &riga.testo,
+                &attrs,
+                Shaping::Advanced,
+            );
+            self.buffer.shape_until_scroll(&mut self.tipografo.font_system, false);
 
-                let base_x = fisico.x + immagine.placement.left;
-                let base_y = run.line_y as i32 + fisico.y - immagine.placement.top;
-                let gw = immagine.placement.width as i32;
-                let gh = immagine.placement.height as i32;
+            for run in self.buffer.layout_runs() {
+                for glifo in run.glyphs.iter() {
+                    if let Some(p) = riga
+                        .parole
+                        .iter()
+                        .find(|p| p.byte.start <= glifo.start && glifo.start < p.byte.end)
+                    {
+                        let e = &mut estremi[p.indice];
+                        // Il riquadro d'avanzamento, non l'inchiostro: e' quello
+                        // che rende uniforme la spaziatura fra rettangolo e testo.
+                        e.0 = e.0.min(x_riga + glifo.x);
+                        e.1 = e.1.max(x_riga + glifo.x + glifo.w);
+                        e.2 = centro_riga;
+                    }
 
-                for oy in 0..gh {
-                    let py = base_y + oy;
-                    if py < 0 || py >= altezza as i32 {
+                    let fisico = glifo.physical((x_riga, y_riga), 1.0);
+                    let Some(immagine) =
+                        self.cache.get_image(&mut self.tipografo.font_system, fisico.cache_key)
+                    else {
+                        continue;
+                    };
+                    if immagine.content != SwashContent::Mask {
+                        // Inter e' un font a contorni: niente bitmap a colori.
                         continue;
                     }
-                    for ox in 0..gw {
-                        let px = base_x + ox;
-                        if px < 0 || px >= larghezza as i32 {
+
+                    let base_x = fisico.x + immagine.placement.left;
+                    let base_y = run.line_y as i32 + fisico.y - immagine.placement.top;
+                    let gw = immagine.placement.width as i32;
+                    let gh = immagine.placement.height as i32;
+
+                    for oy in 0..gh {
+                        let py = base_y + oy;
+                        if py < 0 || py >= altezza as i32 {
                             continue;
                         }
-                        let alfa = immagine.data[(oy * gw + ox) as usize];
-                        if alfa == 0 {
-                            continue;
+                        for ox in 0..gw {
+                            let px = base_x + ox;
+                            if px < 0 || px >= larghezza as i32 {
+                                continue;
+                            }
+                            let alfa = immagine.data[(oy * gw + ox) as usize];
+                            if alfa == 0 {
+                                continue;
+                            }
+                            let idx = py as usize * larghezza + px as usize;
+                            copertura[idx] = copertura[idx].max(alfa);
+                            min_x = min_x.min(px as usize);
+                            min_y = min_y.min(py as usize);
+                            max_x = max_x.max(px as usize);
+                            max_y = max_y.max(py as usize);
                         }
-                        let idx = py as usize * larghezza + px as usize;
-                        copertura[idx] = copertura[idx].max(alfa);
-                        min_x = min_x.min(px as usize);
-                        min_y = min_y.min(py as usize);
-                        max_x = max_x.max(px as usize);
-                        max_y = max_y.max(py as usize);
                     }
                 }
             }
@@ -336,11 +347,10 @@ impl Rasterizzatore {
         // e' quello della fascia di riga.
         let padding = self.stile.padding.max(0.0) * corpo;
         let mezza_altezza = self.stile.altezza.max(0.0) * corpo / 2.0;
-        let centro_y = y_riga + altezza_riga / 2.0;
         let raggio_angoli = self.stile.raggio.max(0.0) * corpo;
         let rettangoli: Vec<Rettangolo> = estremi
             .iter()
-            .map(|&(a, b)| {
+            .map(|&(a, b, centro_y)| {
                 if !a.is_finite() || !b.is_finite() || b <= a {
                     // Parola senza glifi disegnabili: nessun rettangolo.
                     return Rettangolo { x0: 0.0, y0: 0.0, x1: 0.0, y1: 0.0, raggio: 0.0 };
@@ -618,7 +628,7 @@ mod tests {
         let stile = Stile::default();
         let (r, mut tela, _) =
             scena("sottotitoli nitidi su sfondo trasparente", &cfg, stile.clone());
-        let margine = (cfg.margine_orizzontale * cfg.larghezza as f32) as usize;
+        let margine = cfg.margine_x() as usize;
 
         // Senza rettangolo resta il solo testo, che deve stare nei margini.
         r.componi(None, &mut tela);
@@ -745,14 +755,114 @@ mod tests {
         );
     }
 
+    /// Estremi verticali dei pixel non trasparenti.
+    fn estremi_opachi_y(tela: &Tela) -> (usize, usize) {
+        let (w, _) = tela.dimensioni();
+        let mut min = usize::MAX;
+        let mut max = 0usize;
+        for (i, p) in tela.pixel().chunks_exact(4).enumerate() {
+            if p[3] > 0 {
+                let y = i / w;
+                min = min.min(y);
+                max = max.max(y);
+            }
+        }
+        assert!(min != usize::MAX, "nessun pixel disegnato");
+        (min, max)
+    }
+
+    #[test]
+    fn con_due_righe_il_rettangolo_segue_la_riga_della_parola() {
+        let cfg = LayoutConfig { righe_max: 2, ..cfg() };
+        let (r, _, blocchi) = scena(
+            "il rapido allineamento delle parole permette sottotitoli precisi",
+            &cfg,
+            Stile::default(),
+        );
+        let b = &blocchi[0];
+        assert_eq!(b.righe.len(), 2, "serviva un blocco su due righe: {}", b.testo());
+
+        let prima: usize = b.righe[0].parole[0].indice;
+        let seconda: usize = b.righe[1].parole[0].indice;
+        let (ra, rb) = (r.rettangolo(prima).unwrap(), r.rettangolo(seconda).unwrap());
+
+        let y_blocco = cfg.riga_y(2);
+        let h = cfg.altezza_riga();
+        for (rett, k) in [(ra, 0.0f32), (rb, 1.0f32)] {
+            let centro_atteso = y_blocco + (k + 0.5) * h;
+            assert!(
+                ((rett.y0 + rett.y1) / 2.0 - centro_atteso).abs() < 1e-3,
+                "rettangolo centrato a {} invece che a {centro_atteso}",
+                (rett.y0 + rett.y1) / 2.0
+            );
+        }
+        assert!(rb.y0 > ra.y0, "la seconda riga deve stare sotto la prima");
+    }
+
+    #[test]
+    fn due_righe_occupano_piu_altezza_di_una() {
+        let testo = "il rapido allineamento delle parole permette sottotitoli precisi";
+        let cfg1 = LayoutConfig { righe_max: 1, ..cfg() };
+        let cfg2 = LayoutConfig { righe_max: 2, ..cfg() };
+        let (r1, mut t1, _) = scena(testo, &cfg1, Stile::default());
+        let (r2, mut t2, _) = scena(testo, &cfg2, Stile::default());
+        r1.componi(None, &mut t1);
+        r2.componi(None, &mut t2);
+        let (a0, a1) = estremi_opachi_y(&t1);
+        let (b0, b1) = estremi_opachi_y(&t2);
+        assert!(b1 - b0 > a1 - a0, "due righe non occupano piu' spazio verticale di una");
+    }
+
+    #[test]
+    fn l_allineamento_sposta_il_testo_dentro_la_colonna() {
+        let testo = "una prova breve";
+        let mut estremi = Vec::new();
+        for allineamento in [Allineamento::Sinistra, Allineamento::Centro, Allineamento::Destra] {
+            let cfg = LayoutConfig { allineamento, ..cfg() };
+            let (r, mut tela, _) = scena(testo, &cfg, Stile::default());
+            r.componi(None, &mut tela);
+            estremi.push(estremi_opachi(&tela));
+        }
+        let (sx, _) = estremi[0];
+        let (cx, _) = estremi[1];
+        let (dx, _) = estremi[2];
+        assert!(sx < cx && cx < dx, "allineamenti indistinguibili: {sx}, {cx}, {dx}");
+
+        // A sinistra il testo si appoggia al bordo della colonna. Lo scarto
+        // ammesso e' il fianco sinistro del primo glifo, che dipende dalla
+        // lettera: si misura in frazione del corpo, non in pixel fissi.
+        let cfg = cfg();
+        let tolleranza = 0.15 * cfg.corpo();
+        assert!(
+            (sx as f32 - cfg.colonna_x()).abs() < tolleranza,
+            "a sinistra il testo parte da {sx}, la colonna da {}",
+            cfg.colonna_x()
+        );
+    }
+
+    #[test]
+    fn la_posizione_verticale_sposta_il_blocco() {
+        let testo = "una prova breve";
+        let mut centri = Vec::new();
+        for posizione in [0.2f32, 0.5, 0.9] {
+            let cfg = LayoutConfig { posizione_verticale: posizione, ..cfg() };
+            let (r, mut tela, _) = scena(testo, &cfg, Stile::default());
+            r.componi(None, &mut tela);
+            let (y0, y1) = estremi_opachi_y(&tela);
+            centri.push((y0 + y1) / 2);
+        }
+        assert!(
+            centri[0] < centri[1] && centri[1] < centri[2],
+            "la posizione verticale non sposta il testo: {centri:?}"
+        );
+    }
+
     #[test]
     fn il_rettangolo_e_centrato_sulla_fascia_di_riga() {
         let cfg = cfg();
         let (r, _, _) = scena("prova", &cfg, Stile::default());
         let rett = r.rettangolo(0).unwrap();
-        let margine_v = cfg.margine_verticale * cfg.altezza as f32;
-        let y_riga = cfg.altezza as f32 - margine_v - cfg.altezza_riga();
-        let centro_atteso = y_riga + cfg.altezza_riga() / 2.0;
+        let centro_atteso = cfg.riga_y(1) + cfg.altezza_riga() / 2.0;
         assert!(
             ((rett.y0 + rett.y1) / 2.0 - centro_atteso).abs() < 1e-4,
             "centro {} invece di {centro_atteso}",

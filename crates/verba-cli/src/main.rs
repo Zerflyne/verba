@@ -32,7 +32,7 @@ use tracing_subscriber::EnvFilter;
 
 use verba_core::audio::{AudioInput, NormalizeMode, PreprocessConfig};
 use verba_core::eventi::Fase;
-use verba_core::layout::{Attivazione, Formato, LayoutConfig, Posizione, Tipografo};
+use verba_core::layout::{Allineamento, Attivazione, Formato, LayoutConfig, Tipografo};
 use verba_core::pipeline::{self, ConfigTrascrizione, PercorsiModelli};
 use verba_core::prompt::{self, PromptConfig};
 use verba_core::render::{Colore, Rasterizzatore, Stile};
@@ -215,17 +215,43 @@ struct Cli {
     #[arg(long, value_name = "PIXEL")]
     dimensione_font: Option<f32>,
 
-    /// Margine laterale fra testo e bordi, in frazione della larghezza.
-    #[arg(long, default_value_t = 0.08)]
+    /// Distanza minima dai bordi del fotogramma, in frazione della dimensione
+    /// corrispondente. E' un limite invalicabile: nessuna posizione fa uscire
+    /// il testo di qui.
+    #[arg(long, default_value_t = 0.05)]
     margine: f32,
 
-    /// Distanza dal bordo superiore o inferiore, in frazione dell'altezza.
-    #[arg(long, default_value_t = 0.14)]
-    margine_verticale: f32,
+    /// Larghezza della colonna di testo, in frazione della larghezza del
+    /// fotogramma.
+    #[arg(long, default_value_t = 0.80)]
+    larghezza_massima: f32,
 
-    /// Posizione verticale del blocco di sottotitoli.
-    #[arg(long, value_enum, default_value_t = PosizioneArg::Basso)]
-    posizione: PosizioneArg,
+    /// Centro verticale del blocco, in frazione dell'altezza: 0 in alto,
+    /// 1 in basso.
+    #[arg(long, default_value_t = 0.82)]
+    posizione_verticale: f32,
+
+    /// Centro orizzontale della colonna, in frazione della larghezza.
+    #[arg(long, default_value_t = 0.50)]
+    posizione_orizzontale: f32,
+
+    /// Posizione verticale per nome, comoda al posto di
+    /// --posizione-verticale: alto = 18 %, centro = 50 %, basso = 82 %.
+    #[arg(long, value_enum)]
+    posizione: Option<PosizioneArg>,
+
+    /// Righe che possono comparire insieme, da 1 a 3. Il valore predefinito e'
+    /// una sola: piu' righe per volta rendono la lettura caotica.
+    #[arg(long, default_value_t = 1)]
+    righe_massime: usize,
+
+    /// Allineamento delle righe dentro la colonna.
+    #[arg(long, value_enum, default_value_t = AllineamentoArg::Centro)]
+    allineamento: AllineamentoArg,
+
+    /// Disegna il testo in maiuscolo.
+    #[arg(long)]
+    maiuscole: bool,
 
     /// Interlinea come multiplo del corpo. Con una riga sola determina
     /// l'altezza della fascia su cui il rettangolo viene centrato.
@@ -334,6 +360,24 @@ enum PosizioneArg {
     Alto,
     Centro,
     Basso,
+}
+
+impl PosizioneArg {
+    /// La frazione di altezza su cui centrare il blocco.
+    fn frazione(self) -> f32 {
+        match self {
+            PosizioneArg::Alto => 0.18,
+            PosizioneArg::Centro => 0.50,
+            PosizioneArg::Basso => 0.82,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum AllineamentoArg {
+    Sinistra,
+    Centro,
+    Destra,
 }
 
 fn main() -> Result<()> {
@@ -472,8 +516,13 @@ fn main() -> Result<()> {
     info!(
         righe = blocchi.len(),
         parole = parole.len(),
-        corpo = layout_cfg.corpo(),
-        larghezza_utile = layout_cfg.larghezza_utile(),
+        righe_max = layout_cfg.righe_consentite(),
+        corpo = format!(
+            "{:.0} px ({:.1} % dell'altezza)",
+            layout_cfg.corpo(),
+            layout_cfg.corpo_percentuale()
+        ),
+        larghezza_utile = format!("{:.0} px", layout_cfg.larghezza_utile()),
         "impaginazione completata"
     );
 
@@ -551,19 +600,45 @@ fn configura_layout(cli: &Cli) -> Result<LayoutConfig> {
     if !(0.0..0.45).contains(&cli.margine) {
         bail!("--margine deve stare fra 0 e 0,45 (ricevuto {})", cli.margine);
     }
-    if !(0.0..0.45).contains(&cli.margine_verticale) {
-        bail!("--margine-verticale deve stare fra 0 e 0,45 (ricevuto {})", cli.margine_verticale);
+    if !(0.05..=1.0).contains(&cli.larghezza_massima) {
+        bail!(
+            "--larghezza-massima deve stare fra 0,05 e 1 (ricevuto {})",
+            cli.larghezza_massima
+        );
+    }
+    for (nome, valore) in
+        [("--posizione-verticale", cli.posizione_verticale), ("--posizione-orizzontale", cli.posizione_orizzontale)]
+    {
+        if !(0.0..=1.0).contains(&valore) {
+            bail!("{nome} deve stare fra 0 e 1 (ricevuto {valore})");
+        }
+    }
+    if !(1..=layout::RIGHE_MAX_CONSENTITE).contains(&cli.righe_massime) {
+        bail!(
+            "--righe-massime deve stare fra 1 e {} (ricevuto {})",
+            layout::RIGHE_MAX_CONSENTITE,
+            cli.righe_massime
+        );
     }
     Ok(LayoutConfig {
         larghezza,
         altezza,
-        margine_orizzontale: cli.margine,
-        margine_verticale: cli.margine_verticale,
-        posizione: match cli.posizione {
-            PosizioneArg::Alto => Posizione::Alto,
-            PosizioneArg::Centro => Posizione::Centro,
-            PosizioneArg::Basso => Posizione::Basso,
+        margine: cli.margine,
+        larghezza_max: cli.larghezza_massima,
+        // --posizione, se c'e', ha la precedenza: e' la forma per nome della
+        // stessa grandezza.
+        posizione_verticale: cli
+            .posizione
+            .map(PosizioneArg::frazione)
+            .unwrap_or(cli.posizione_verticale),
+        posizione_orizzontale: cli.posizione_orizzontale,
+        righe_max: cli.righe_massime,
+        allineamento: match cli.allineamento {
+            AllineamentoArg::Sinistra => Allineamento::Sinistra,
+            AllineamentoArg::Centro => Allineamento::Centro,
+            AllineamentoArg::Destra => Allineamento::Destra,
         },
+        maiuscole: cli.maiuscole,
         dimensione_font: cli.dimensione_font,
         interlinea: cli.interlinea,
         durata_max: cli.durata_blocco,

@@ -9,7 +9,7 @@ grafici su sfondo trasparente**, pronti da sovrapporre a un video nel montaggio.
 | Segmentazione | `pyannote/segmentation-3.0` | ONNX Runtime |
 | Trascrizione | `whisper-large-v3` | whisper.cpp (GGML) |
 | Allineamento | `wav2vec2` italiano (CTC) | ONNX Runtime |
-| Impaginazione | — | cosmic-text, font Inter 700, una riga per volta |
+| Impaginazione | — | cosmic-text, font Inter 700, da una a tre righe |
 | Disegno | — | RGBA con alfa: testo + rettangolo di evidenziazione |
 | Codifica | — | libavcodec/libavformat (C++), `prores_ks` 4444 |
 | Uscita | — | MOV ProRes 4444 con canale alfa (+ SRT e JSON opzionali) |
@@ -34,7 +34,7 @@ crates/
       transcribe.rs      Whisper large-v3 via whisper.cpp; release() libera la VRAM
       align.rs           wav2vec2 ONNX + Viterbi CTC: intervallo temporale di ogni parola;
                          ripulisci() normalizza la sequenza (buchi, ordine, durate)
-      layout.rs          impaginazione: righe, chunk, finestre di accensione
+      layout.rs          impaginazione: blocchi, righe equilibrate, finestre di accensione
       render.rs          disegno RGBA: maschere, contorno, rettangolo smussato
       encoder.rs         ponte FFI verso l'encoder C++
       video.rs           dalla linea temporale ai fotogrammi codificati
@@ -82,20 +82,38 @@ cargo run --release -- prova.mp3 --solo-audio -v
 
 ### Dai tempi delle parole al fotogramma
 
-**`layout.rs` — impaginazione.** Le parole allineate diventano *righe*, e a
-schermo ne compare **una sola per volta**: piu' righe insieme rendono la lettura
-caotica, e con l'evidenziazione che salta da una parola all'altra lo sguardo non
-saprebbe dove stare. Una riga si chiude quando succede una di queste cose: una
-pausa piu' lunga di `--pausa-blocco`, un cambio di segmento di pyannote, il
-superamento di `--durata-blocco`, la punteggiatura di fine frase, oppure — ed e'
-il vincolo grafico — la parola successiva non ci starebbe piu'.
+**`layout.rs` — impaginazione.** Le parole allineate diventano *blocchi*, e a
+schermo ne compare uno per volta. Un blocco si chiude quando succede una di
+queste cose: una pausa piu' lunga di `--pausa-blocco`, un cambio di segmento di
+pyannote, il superamento di `--durata-blocco`, la punteggiatura di fine frase,
+oppure — ed e' il vincolo grafico — le parole non entrerebbero piu' nel numero
+di righe consentito.
+
+**Il valore predefinito e' una riga sola.** Piu' righe insieme rendono la
+lettura caotica, e con l'evidenziazione che salta da una parola all'altra lo
+sguardo non saprebbe dove stare. Chi le vuole le chiede con `--righe-massime`,
+fino a tre.
+
+Con piu' di una riga le parole non vengono ammassate avidamente sulla prima:
+si usa il **numero minimo di righe** e, a parita' di righe, la distribuzione
+piu' equilibrata. Il costo di una riga e' lo spazio che le avanza *al quadrato*,
+ed e' l'elevamento al quadrato a rendere la soluzione equilibrata invece che
+avida — senza, si otterrebbe il difetto tipico dei sottotitoli generati: una
+riga piena e una con una parola sola.
 
 La capienza non e' stimata a caratteri: ogni riga candidata viene **misurata con
 cosmic-text sul font che verra' davvero disegnato**. In Inter 700 le stringhe
 `illlli` e `WWWWWW` hanno lo stesso numero di caratteri e larghezze che
 differiscono di piu' del doppio; contare i caratteri farebbe uscire il testo dai
-bordi. Lo spazio disponibile e' la larghezza del fotogramma meno due volte
-`--margine`.
+bordi. E se il testo e' in maiuscolo lo e' **gia' qui**, perche' e' piu' largo e
+la spezzatura deve tenerne conto.
+
+**La colonna di testo.** La sua larghezza e' la piu' stretta fra quella chiesta
+con `--larghezza-massima` e quella che `--margine` concede; e' centrata su
+`--posizione-orizzontale` e poi spinta dentro i margini. Lo stesso vale in
+verticale: `--posizione-verticale` e' il **centro** del blocco, e il margine ha
+sempre l'ultima parola — portare il cursore all'estremo appoggia il blocco al
+margine invece di farlo uscire dal fotogramma.
 
 **`render.rs` — disegno.** Il fotogramma e' RGBA con **alfa dritta** (non
 premoltiplicata) e sfondo completamente trasparente. L'ordine di sovrapposizione
@@ -499,14 +517,19 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 | Opzione | Default | Descrizione |
 |---|---|---|
 | `--font` | Inter 700 incorporato | file `.ttf` alternativo |
-| `--dimensione-font` | 6,5 % del lato minore | corpo in pixel |
-| `--margine` | `0.08` | margine laterale, frazione della larghezza |
-| `--margine-verticale` | `0.14` | distanza dal bordo, frazione dell'altezza |
-| `--posizione alto\|centro\|basso` | `basso` | collocazione verticale |
+| `--dimensione-font` | 6,5 % del lato minore | corpo in pixel, riferiti all'altezza del fotogramma |
+| `--margine` | `0.05` | distanza minima dai bordi: limite invalicabile |
+| `--larghezza-massima` | `0.80` | larghezza della colonna di testo, frazione della larghezza |
+| `--posizione-verticale` | `0.82` | centro verticale del blocco, 0 in alto e 1 in basso |
+| `--posizione-orizzontale` | `0.50` | centro orizzontale della colonna |
+| `--posizione alto\|centro\|basso` | — | forma per nome di `--posizione-verticale` (18 %, 50 %, 82 %) |
+| `--righe-massime 1\|2\|3` | `1` | righe che compaiono insieme |
+| `--allineamento sinistra\|centro\|destra` | `centro` | allineamento dentro la colonna |
+| `--maiuscole` | off | disegna il testo in maiuscolo |
 | `--interlinea` | `1.18` | multiplo del corpo; e' la fascia su cui il rettangolo e' centrato |
-| `--durata-blocco` | `5.0` | durata massima di una riga, in secondi |
-| `--pausa-blocco` | `0.7` | pausa che chiude la riga, in secondi |
-| `--tenuta` | `0.30` | permanenza della riga dopo l'ultima parola, in secondi |
+| `--durata-blocco` | `5.0` | durata massima di un blocco, in secondi |
+| `--pausa-blocco` | `0.7` | pausa che chiude il blocco, in secondi |
+| `--tenuta` | `0.30` | permanenza del blocco dopo l'ultima parola, in secondi |
 
 **Evidenziazione**
 
@@ -534,8 +557,8 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 | Opzione | Default | Descrizione |
 |---|---|---|
 | `--srt FILE` | — | esporta anche l'SRT |
-| `--srt-mode blocchi\|word\|line\|karaoke` | `blocchi` | struttura dell'SRT: `blocchi` = una battuta per riga a schermo |
-| `--srt-max-chars` | `84` | caratteri per battuta in `line` e `karaoke` |
+| `--srt-mode blocchi\|parola\|riga\|karaoke` | `blocchi` | struttura dell'SRT: `blocchi` = una battuta per blocco a schermo |
+| `--srt-max-chars` | `84` | caratteri per battuta in `riga` e `karaoke` |
 | `--json FILE` | — | mappatura parola-per-parola in JSON |
 | `--language` | `it` | lingua Whisper (`auto` per rilevamento) |
 | `--beam-size` | `5` | ampiezza del beam search |
@@ -554,6 +577,7 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 | `--onset` / `--offset` | `0.50` / `0.35` | soglie di isteresi di pyannote |
 | `--no-segmentation` | off | finestre uniformi al posto di pyannote |
 | `--solo-audio` | off | solo pre-elaborazione, con statistiche |
+| `--progresso testo\|json\|muto` | `testo` | come mostrare l'avanzamento delle fasi su stderr |
 
 ### Selezione della GPU
 
@@ -586,7 +610,7 @@ se' una confidenza in `[0, 1]`, esportata nel JSON.
 
 Tutto cio' che sta a valle — raggruppamento in battute, resa SRT, export JSON —
 assume una sequenza **ordinata e senza buchi**. Quell'invariante viene
-stabilita in un solo punto, `align::ripulisci`, che:
+stabilita in un solo punto, `pulizia::ripulisci`, che:
 
 * scarta le parole vuote;
 * **riempie i timestamp mancanti**: l'allineatore CTC non aggancia numeri e
@@ -611,10 +635,10 @@ sovrapposizioni che `ripulisci` ha eliminato.
 cargo test
 ```
 
-79 test coprono ricampionamento (lunghezza e assenza di deriva temporale),
+118 test coprono ricampionamento (lunghezza e assenza di deriva temporale),
 normalizzazione, Viterbi CTC (inclusi i token ripetuti che richiedono un blank
-di separazione), la normalizzazione di `ripulisci` (interpolazione dei buchi,
-spartizione equa, monotonia, durata minima, troncamento, idempotenza),
+di separazione), la normalizzazione di `pulizia::ripulisci` (interpolazione dei
+buchi, spartizione equa, monotonia, durata minima, troncamento, idempotenza),
 l'assenza di sovrapposizioni nelle battute SRT, il parsing del CSV dei termini
 (delimitatori, intestazioni, virgolette, duplicati, troncamento) e la parte
 grafica: misura del testo con il font reale, righe che restano dentro i margini,
@@ -622,14 +646,33 @@ righe che non si sovrappongono e coprono tutte le parole, sfondo che resta
 trasparente, contorno che allarga la sagoma, frame rate NTSC che resta una
 frazione esatta.
 
-Sul rettangolo di evidenziazione in particolare: che stia dietro al testo (che
-resta bianco), che avvolga i glifi della parola indicata, che superi la parola
-esattamente del padding, che l'altezza **non** dipenda dai discendenti, che sia
-centrato sulla fascia di riga, che gli angoli siano smussati, che salti da una
-parola all'altra, e che non venga disegnato quando nessuna parola e' attiva. Sulle
-finestre di accensione: anticipo, tetto alla pausa, coda, salto senza spegnimento
-fra parole vicine, e finestre sempre ordinate e disgiunte dentro la riga.
+Sulla trascrizione come struttura dati: che gli identificativi siano assegnati e
+distinti, che sopravvivano alla pulizia, che la versione grezza resti intatta
+accanto a quella normalizzata, che una parola si ritrovi per identificativo
+anche dopo che le altre si sono spostate, e che ogni modifica rinormalizzi.
 
-L'encoder C++ non e' coperto dai test unitari: si verifica sull'uscita reale,
-con `ffprobe` (`profile=4444`, `pix_fmt=yuva444p...`) e sovrapponendo il MOV a
-un fondo pieno.
+Sull'impaginazione su piu' righe: che il valore predefinito resti una riga sola,
+che il massimo chiesto non venga mai superato, che con due righe servano meno
+blocchi, che la distribuzione sia equilibrata e non avida, che ogni parola stia
+su una riga sola, che la colonna e il blocco restino nei margini a qualsiasi
+posizione, e che il maiuscolo arrivi fino al testo della riga con gli intervalli
+di byte ancora validi.
+
+Sul rettangolo di evidenziazione: che stia dietro al testo (che resta bianco),
+che avvolga i glifi della parola indicata, che superi la parola esattamente del
+padding, che l'altezza **non** dipenda dai discendenti, che sia centrato sulla
+fascia della **sua** riga anche quando le righe sono due, che gli angoli siano
+smussati, che salti da una parola all'altra, e che non venga disegnato quando
+nessuna parola e' attiva. Sulle finestre di accensione: anticipo, tetto alla
+pausa, coda, salto senza spegnimento fra parole vicine, e finestre sempre
+ordinate e disgiunte dentro il blocco.
+
+Sull'avanzamento: che una fase annunci inizio e fine, che si chiuda anche
+uscendo da un ritorno anticipato, che l'avanzamento resti fra 0 e 1, e che
+l'interruttore fermi davvero la pipeline.
+
+L'encoder C++ e' coperto da due test che passano davvero da libavcodec: uno
+scrive un MOV piccolo e conta i fotogrammi, l'altro annulla a meta' e verifica
+che il file parziale non resti sul disco. La qualita' dell'uscita si verifica a
+mano, con `ffprobe` (`profile=4444`, `pix_fmt=yuva444p...`) e sovrapponendo il
+MOV a un fondo pieno.
