@@ -1,4 +1,4 @@
-//! Trascrizione con **Whisper large-v3** tramite whisper.cpp (whisper-rs).
+//! Trascrizione con **Whisper** tramite whisper.cpp (whisper-rs).
 //!
 //! Whisper fornisce il *testo*; i tempi parola-per-parola arrivano dal
 //! successivo allineamento forzato con wav2vec2. Il contesto viene rilasciato
@@ -75,7 +75,7 @@ impl Transcriber {
             modello = %model.display(),
             device = %device.describe(),
             lingua = %cfg.language,
-            "Whisper large-v3 caricato"
+            "Whisper caricato"
         );
         gpu::log_vram(device, "dopo il caricamento di Whisper");
 

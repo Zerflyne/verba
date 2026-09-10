@@ -33,6 +33,7 @@
 mod aspetto;
 mod avanzamento;
 mod elenchi;
+mod modelli;
 mod opzioni;
 mod uscite;
 
@@ -47,7 +48,7 @@ use verba_core::audio::{AudioInput, NormalizeMode, PreprocessConfig, Pcm};
 use verba_core::eventi::{Fase, Progresso};
 use verba_core::layout::{Blocco, LayoutConfig};
 use verba_core::media::{Informazioni, Media};
-use verba_core::pipeline::{self, ConfigTrascrizione, PercorsiModelli};
+use verba_core::pipeline::{self, ConfigTrascrizione};
 use verba_core::prompt::{self, PromptConfig};
 use verba_core::render::Rasterizzatore;
 use verba_core::scena::Scena;
@@ -138,6 +139,36 @@ enum Comando {
 
     /// Elenca i formati di uscita.
     Formati,
+
+    /// Elenca, scarica e verifica i modelli.
+    ///
+    /// Senza opzioni dice cosa c'e' e cosa manca. I modelli non sono dentro
+    /// l'eseguibile: si scaricano una volta e restano nella cartella dati.
+    Modelli(ArgomentiModelli),
+}
+
+#[derive(Args, Debug)]
+struct ArgomentiModelli {
+    /// Scarica quello che manca, riprendendo uno scaricamento interrotto.
+    #[arg(long)]
+    scarica: bool,
+
+    /// Ricalcola l'impronta SHA-256 di quello che c'e'.
+    #[arg(long)]
+    verifica: bool,
+
+    /// Cancella un modello. Ripetibile.
+    #[arg(long, value_name = "ID")]
+    rimuovi: Vec<String>,
+
+    /// Per quale dimensione del modello di trascrizione.
+    #[arg(long, value_enum, default_value_t = opzioni::DimensioneArg::LargeV3,
+          value_name = "DIMENSIONE")]
+    modello: opzioni::DimensioneArg,
+
+    /// Cartella dei modelli (default: la cartella dati di Verba).
+    #[arg(long, value_name = "CARTELLA")]
+    cartella_modelli: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -238,10 +269,39 @@ fn main() -> Result<()> {
             elenchi::formati();
             Ok(())
         }
+        Comando::Modelli(a) => comando_modelli(a, &cli.globali),
         Comando::Trascrivi(a) => trascrivi(a, &date, &cli.globali),
         Comando::Rendi(a) => video(a, &date, &cli.globali, Uso::Rendi),
         Comando::Overlay(a) => video(a, &date, &cli.globali, Uso::Overlay),
     }
+}
+
+// ----------------------------------------------------------------- modelli
+
+fn comando_modelli(a: ArgomentiModelli, globali: &Globali) -> Result<()> {
+    let cartella = a.cartella_modelli.clone().unwrap_or_else(verba_core::cartelle::modelli);
+    let dimensione: verba_core::modelli::Dimensione = a.modello.into();
+
+    if !a.rimuovi.is_empty() {
+        return modelli::rimuovi(&cartella, &a.rimuovi);
+    }
+    if a.verifica {
+        return modelli::verifica(&cartella);
+    }
+    if a.scarica {
+        let progresso = canale(globali);
+        let a_mano = verba_core::modelli::scarica_mancanti(&cartella, dimensione, &progresso)?;
+        for m in a_mano {
+            println!(
+                "\n{} non si scarica.\n{}",
+                m.nome,
+                verba_core::modelli::istruzioni_a_mano(m)
+            );
+        }
+        println!();
+    }
+    modelli::elenca(&cartella, dimensione);
+    Ok(())
 }
 
 /// Cosa si sta producendo. E' l'unica differenza fra `rendi` e `overlay`.
@@ -477,10 +537,11 @@ fn elabora(
         return Ok(None);
     }
 
-    // La libreria di ONNX Runtime va trovata adesso: dopo verrebbe fuori a
-    // decodifica finita, ed e' l'unico prerequisito che non e' dentro
-    // l'eseguibile.
+    // I prerequisiti che non stanno dentro l'eseguibile — la libreria di ONNX
+    // Runtime e i quattro modelli — si controllano adesso: dopo verrebbero
+    // fuori a decodifica finita.
     verba_core::onnx::assicura_libreria()?;
+    let percorsi = modelli::percorsi(comuni, progresso)?;
 
     // Le impostazioni grafiche vengono validate subito: un colore scritto male
     // non deve emergere dopo mezz'ora di trascrizione.
@@ -539,12 +600,7 @@ fn elabora(
     // sequenza di caricamento e rilascio dei modelli stanno in verba-core,
     // gli stessi per la riga di comando e per l'applicazione.
     let cfg = ConfigTrascrizione {
-        modelli: PercorsiModelli {
-            whisper: comuni.modello_whisper.clone(),
-            segmentazione: comuni.modello_segmentazione.clone(),
-            allineamento: comuni.modello_allineamento.clone(),
-            vocabolario: comuni.vocabolario_allineamento.clone(),
-        },
+        modelli: percorsi,
         segmentazione: SegmentationConfig {
             onset: comuni.soglia_attacco,
             offset: comuni.soglia_rilascio,

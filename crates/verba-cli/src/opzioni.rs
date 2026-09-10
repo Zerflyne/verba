@@ -20,10 +20,33 @@ use clap::{Args, ValueEnum};
 use verba_core::caratteri;
 use verba_core::encoder::FormatoVideo;
 use verba_core::gpu;
+use verba_core::modelli::Dimensione;
 use verba_core::progetto::{self, Preset};
 use verba_core::prompt;
 
 // ---------------------------------------------------------------- enumerazioni
+
+/// La dimensione del modello di trascrizione, sulla riga di comando.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum DimensioneArg {
+    /// Il piu' rapido: 465 MB, per una bozza o per una macchina modesta.
+    Small,
+    /// A meta' strada: 1,4 GB.
+    Medium,
+    /// La qualita' di riferimento: 2,9 GB.
+    #[value(name = "large-v3", alias = "large")]
+    LargeV3,
+}
+
+impl From<DimensioneArg> for Dimensione {
+    fn from(d: DimensioneArg) -> Self {
+        match d {
+            DimensioneArg::Small => Dimensione::Small,
+            DimensioneArg::Medium => Dimensione::Medium,
+            DimensioneArg::LargeV3 => Dimensione::LargeV3,
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum NormalizzaArg {
@@ -114,27 +137,36 @@ pub enum AllineamentoArg {
 #[derive(Args, Debug, Clone)]
 pub struct Comuni {
     // ---- modelli ----
-    /// Modello Whisper large-v3 in formato GGML/GGUF (whisper.cpp).
-    #[arg(long, alias = "whisper-model", default_value = "models/ggml-large-v3.bin",
-          value_name = "FILE", help_heading = "Modelli")]
-    pub modello_whisper: PathBuf,
+    /// Dimensione del modello di trascrizione. Piu' piccolo = piu' veloce e
+    /// meno memoria, con qualche nome proprio in meno.
+    #[arg(long, value_enum, default_value_t = DimensioneArg::LargeV3,
+          value_name = "DIMENSIONE", help_heading = "Modelli")]
+    pub modello: DimensioneArg,
 
-    /// Modello di segmentazione pyannote esportato in ONNX.
-    #[arg(long, alias = "segmentation-model",
-          default_value = "models/pyannote-segmentation-3.0.onnx",
-          value_name = "FILE", help_heading = "Modelli")]
-    pub modello_segmentazione: PathBuf,
+    /// Cartella dei modelli (default: la cartella dati di Verba, oppure
+    /// `./models` se ci si trova nel repository).
+    #[arg(long, value_name = "CARTELLA", help_heading = "Modelli")]
+    pub cartella_modelli: Option<PathBuf>,
 
-    /// Modello wav2vec2-italian (testa CTC) esportato in ONNX.
-    #[arg(long, alias = "align-model", default_value = "models/wav2vec2-italian.onnx",
-          value_name = "FILE", help_heading = "Modelli")]
-    pub modello_allineamento: PathBuf,
+    /// Scarica i modelli mancanti invece di fermarsi.
+    #[arg(long, help_heading = "Modelli")]
+    pub scarica_modelli: bool,
 
-    /// Vocabolario del tokenizer wav2vec2 (vocab.json).
-    #[arg(long, alias = "align-vocab",
-          default_value = "models/wav2vec2-italian.vocab.json",
-          value_name = "FILE", help_heading = "Modelli")]
-    pub vocabolario_allineamento: PathBuf,
+    /// Un file Whisper GGML/GGUF preciso, al posto di quello del catalogo.
+    #[arg(long, alias = "whisper-model", value_name = "FILE", help_heading = "Modelli")]
+    pub modello_whisper: Option<PathBuf>,
+
+    /// Il modello di segmentazione pyannote in ONNX.
+    #[arg(long, alias = "segmentation-model", value_name = "FILE", help_heading = "Modelli")]
+    pub modello_segmentazione: Option<PathBuf>,
+
+    /// Il modello wav2vec2-italian (testa CTC) in ONNX.
+    #[arg(long, alias = "align-model", value_name = "FILE", help_heading = "Modelli")]
+    pub modello_allineamento: Option<PathBuf>,
+
+    /// Il vocabolario del tokenizer wav2vec2 (vocab.json).
+    #[arg(long, alias = "align-vocab", value_name = "FILE", help_heading = "Modelli")]
+    pub vocabolario_allineamento: Option<PathBuf>,
 
     // ---- dispositivo ----
     /// VRAM totale minima (MiB) perche' una GPU sia usata. Il criterio e' la

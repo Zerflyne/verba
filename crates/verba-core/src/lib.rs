@@ -34,6 +34,7 @@ pub mod eventi;
 pub mod gpu;
 pub mod layout;
 pub mod media;
+pub mod modelli;
 pub mod onnx;
 pub mod pipeline;
 pub mod progetto;

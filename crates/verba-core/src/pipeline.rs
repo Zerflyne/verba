@@ -20,7 +20,9 @@ use tracing::warn;
 use crate::align::{AlignConfig, Aligner};
 use crate::audio::Pcm;
 use crate::eventi::{Fase, Progresso};
+use crate::cartelle;
 use crate::gpu::{self, Device};
+use crate::modelli::{self, Dimensione};
 use crate::onnx;
 use crate::segmentation::{self, SegmentationConfig, Segmenter};
 use crate::transcribe::{Transcriber, WhisperConfig};
@@ -40,16 +42,50 @@ pub struct PercorsiModelli {
 }
 
 impl PercorsiModelli {
-    /// I quattro file dentro una cartella, con i nomi che usa lo script di
-    /// esportazione.
+    /// I quattro file dentro una cartella, con i nomi del catalogo.
     pub fn nella_cartella(cartella: impl AsRef<Path>) -> Self {
+        Self::nella_cartella_con(cartella, Dimensione::default())
+    }
+
+    /// Come [`Self::nella_cartella`], ma scegliendo la dimensione di Whisper.
+    pub fn nella_cartella_con(cartella: impl AsRef<Path>, d: Dimensione) -> Self {
         let c = cartella.as_ref();
         Self {
-            whisper: c.join("ggml-large-v3.bin"),
+            whisper: c.join(d.file()),
             segmentazione: c.join("pyannote-segmentation-3.0.onnx"),
-            allineamento: c.join("wav2vec2-italian.onnx"),
+            allineamento: c.join(modelli::ALLINEATORE.file),
             vocabolario: c.join("wav2vec2-italian.vocab.json"),
         }
+    }
+
+    /// I modelli dove Verba li tiene di suo, con una scorciatoia per lo
+    /// sviluppo.
+    ///
+    /// La cartella buona e' quella dati dell'utente. Ma finche' si lavora nel
+    /// repository i modelli stanno in `./models`, ed e' scortese costringere a
+    /// spostarli o a scaricarli due volte: se un file non c'e' nella cartella
+    /// dati e c'e' li', si usa quello.
+    pub fn predefiniti(d: Dimensione) -> Self {
+        let mut p = Self::nella_cartella_con(cartelle::modelli(), d);
+        let accanto = Path::new("models");
+        if accanto.is_dir() {
+            for campo in [
+                &mut p.whisper,
+                &mut p.segmentazione,
+                &mut p.allineamento,
+                &mut p.vocabolario,
+            ] {
+                if !campo.exists() {
+                    if let Some(nome) = campo.file_name() {
+                        let alternativa = accanto.join(nome);
+                        if alternativa.is_file() {
+                            *campo = alternativa;
+                        }
+                    }
+                }
+            }
+        }
+        p
     }
 
     /// Quali dei file richiesti mancano. Vuoto significa che si puo' partire.

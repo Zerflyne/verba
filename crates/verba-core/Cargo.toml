@@ -27,6 +27,8 @@ ndarray.workspace = true
 
 whisper-rs.workspace = true
 
+ureq.workspace = true
+sha2.workspace = true
 nvml-wrapper.workspace = true
 
 cosmic-text.workspace = true

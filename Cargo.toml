@@ -33,6 +33,10 @@ ndarray = "0.16"
 # whisper.cpp (large-v3, GGML/GGUF)
 whisper-rs = "=0.14.2"
 
+# scaricamento dei modelli: HTTP con ripresa e verifica dell'hash
+ureq = "2.12"
+sha2 = "0.10"
+
 # interrogazione VRAM
 nvml-wrapper = "0.10"
 

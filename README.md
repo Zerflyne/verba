@@ -434,24 +434,69 @@ whisper.cpp con Vulkan enumera i dispositivi per conto suo e non segue
 
 ## Modelli
 
-```bash
-# 1. Whisper large-v3 (GGML per whisper.cpp)
-mkdir -p models && cd models
-wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin
-cd ..
+**Il primo avvio scarica circa 3 GB.** I modelli non stanno dentro
+l'eseguibile — Whisper large-v3 da solo ne pesa 2,9 — e vivono nella cartella
+dati dell'utente:
 
-# 2. pyannote + wav2vec2 esportati in ONNX
-pip install "torch>=2.2" onnx transformers pyannote.audio huggingface_hub
-python scripts/export_models.py --all --hf-token hf_xxx
+| Sistema | Cartella |
+|---|---|
+| Linux | `$XDG_DATA_HOME/verba/models`, altrimenti `~/.local/share/verba/models` |
+| Windows | `%LOCALAPPDATA%\verba\models` |
+| macOS | `~/Library/Application Support/verba/models` |
+
+`VERBA_DATA_DIR` scavalca tutto, e `--cartella-modelli` la scavalca per un
+singolo comando. Se stai lavorando dentro il repository e i modelli sono in
+`./models`, Verba usa quelli senza chiedere.
+
+```bash
+verba modelli                         # cosa c'e', cosa manca, quanto occupa
+verba modelli --scarica               # scarica quello che manca
+verba modelli --scarica --modello small
+verba modelli --verifica              # ricalcola le impronte SHA-256
+verba modelli --rimuovi medium
 ```
 
-`pyannote/segmentation-3.0` e' un modello *gated*: vanno accettate le
-condizioni sulla sua pagina Hugging Face e serve un token.
+Di ogni file si verifica l'impronta SHA-256 dichiarata dal repository di
+origine, e uno scaricamento interrotto **riprende**: il file in corso si chiama
+`nome.parziale` finche' l'impronta non torna, e solo allora prende il nome
+definitivo. `Ctrl-C` lo interrompe lasciando il pezzo scaricato dov'e'.
 
-Il modello di allineamento predefinito e'
-`jonatasgrosman/wav2vec2-large-xlsr-53-italian`; se ne puo' usare un altro con
-`--w2v-model`. Lo script salva anche il `vocab.json`, da cui il programma
-deduce da solo blank CTC, delimitatore di parola e maiuscolo/minuscolo.
+### La dimensione del modello
+
+| Dimensione | Disco | Memoria | Velocita' |
+|---|---|---|---|
+| `large-v3` (default) | 2,9 GB | ~4,3 GB | la qualita' di riferimento; su CPU e' lento |
+| `medium` | 1,4 GB | ~2,2 GB | circa due volte piu' veloce, qualche nome proprio in meno |
+| `small` | 465 MB | ~1 GB | quattro-cinque volte piu' veloce; per una bozza o per una macchina modesta |
+
+Si sceglie con `--modello`, su qualsiasi comando.
+
+### L'allineatore va esportato
+
+Tre file su quattro si scaricano da soli. Il quarto — wav2vec2 italiano in
+ONNX, quello che da' il tempo esatto di **ogni parola** — non esiste in una
+versione pubblica di cui fidarsi, e va prodotto una volta sola sulla propria
+macchina:
+
+```bash
+pip install "torch>=2.2" onnx transformers huggingface_hub
+python scripts/export_models.py --w2v
+mv wav2vec2-italian.onnx wav2vec2-italian.vocab.json ~/.local/share/verba/models/
+```
+
+Il modello di partenza e' `jonatasgrosman/wav2vec2-large-xlsr-53-italian`; se
+ne puo' usare un altro con `--w2v-model`. Lo script salva anche il
+`vocab.json`, da cui il programma deduce da solo blank CTC, delimitatore di
+parola e maiuscolo/minuscolo — ma quel file, essendo piccolo e pubblico, lo
+scarica gia' `verba modelli --scarica`.
+
+Per la segmentazione Verba usa l'esportazione ONNX di
+`onnx-community/pyannote-segmentation-3.0`, che **non e' gated**: nessun
+account, nessun token, nessuna condizione da accettare al primo avvio. Da'
+gli stessi segmenti dell'esportazione fatta in casa da
+`pyannote/segmentation-3.0` (verificato sullo stesso audio), che resta
+disponibile con `scripts/export_models.py --pyannote --hf-token hf_xxx` per chi
+la preferisce.
 
 **Attenzione al language model.** Quel repo contiene una cartella
 `language_model/` e il suo `preprocessor_config.json` dichiara
@@ -574,11 +619,9 @@ Il **formato non si dichiara**: lo dice l'estensione di `--out`.
    cp /percorso/onnxruntime/lib/libonnxruntime*.so* ~/.local/share/verba/lib/
    ```
    Se manca, il programma lo dice subito e spiega dove metterla.
-2. **I quattro file dei modelli raggiungibili da `models/`.** Il percorso e'
-   relativo alla cartella da cui lanci, quindi o ci si posiziona dentro, o si
-   passano i percorsi assoluti con `--modello-whisper`,
-   `--modello-segmentazione`, `--modello-allineamento`,
-   `--vocabolario-allineamento`.
+2. **I modelli.** `verba modelli` dice cosa manca, `verba modelli --scarica`
+   lo scarica. Se manca qualcosa, i comandi si fermano subito dicendo cosa e
+   come averlo — non a decodifica finita.
 3. **La build fatta**, `target/release/verba`.
 
 ### Esecuzione
@@ -825,10 +868,13 @@ preset ne chiede un'altra viene ignorata, e lo si dice.
 | `--termini-preambolo` | — | testo davanti all'elenco dei termini |
 | `--prompt-max-caratteri` | `700` | limite del prompt (~224 token Whisper) |
 | `--solo-prompt` | off | stampa l'initial prompt ed esce |
-| `--modello-whisper` | `models/ggml-large-v3.bin` | modello GGML per whisper.cpp |
-| `--modello-segmentazione` | `models/pyannote-segmentation-3.0.onnx` | pyannote in ONNX |
-| `--modello-allineamento` | `models/wav2vec2-italian.onnx` | wav2vec2 CTC in ONNX |
-| `--vocabolario-allineamento` | `models/wav2vec2-italian.vocab.json` | vocabolario del tokenizer |
+| `--modello small\|medium\|large-v3` | `large-v3` | dimensione del modello di trascrizione |
+| `--cartella-modelli` | cartella dati, o `./models` | dove stanno i modelli |
+| `--scarica-modelli` | off | scarica quello che manca invece di fermarsi |
+| `--modello-whisper` | dal catalogo | un file GGML preciso |
+| `--modello-segmentazione` | dal catalogo | pyannote in ONNX |
+| `--modello-allineamento` | dal catalogo | wav2vec2 CTC in ONNX |
+| `--vocabolario-allineamento` | dal catalogo | vocabolario del tokenizer |
 | `--vram-minima-mib` | `8000` | VRAM **totale** minima per usare la GPU |
 | `--gpu INDICE` | auto | forza una GPU specifica |
 | `--cpu` | off | forza la CPU |

@@ -25,6 +25,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Fase {
+    /// Scaricamento dei modelli. Non fa parte della pipeline: capita una
+    /// volta sola, al primo avvio, e ha una schermata tutta sua.
+    Scaricamento,
     Preparazione,
     Segmentazione,
     Trascrizione,
@@ -36,7 +39,8 @@ pub enum Fase {
 
 impl Fase {
     /// L'ordine di svolgimento. Non tutte le fasi vengono sempre eseguite.
-    pub const TUTTE: [Fase; 7] = [
+    pub const TUTTE: [Fase; 8] = [
+        Fase::Scaricamento,
         Fase::Preparazione,
         Fase::Segmentazione,
         Fase::Trascrizione,
@@ -49,6 +53,7 @@ impl Fase {
     /// Come la fase va scritta all'utente.
     pub fn etichetta(self) -> &'static str {
         match self {
+            Fase::Scaricamento => "Scaricamento dei modelli",
             Fase::Preparazione => "Preparazione dell'audio",
             Fase::Segmentazione => "Rilevamento del parlato",
             Fase::Trascrizione => "Trascrizione",
@@ -62,6 +67,7 @@ impl Fase {
     /// Nome breve, per i log e per il JSON.
     pub fn nome(self) -> &'static str {
         match self {
+            Fase::Scaricamento => "scaricamento",
             Fase::Preparazione => "preparazione",
             Fase::Segmentazione => "segmentazione",
             Fase::Trascrizione => "trascrizione",
@@ -250,7 +256,16 @@ impl Cronometro<'_> {
 }
 
 impl Drop for Cronometro<'_> {
+    /// La fase si dichiara conclusa uscendo di scena, comunque si esca — cosi'
+    /// nessun `return` anticipato lascia una fase accesa per sempre.
+    ///
+    /// Con un'eccezione: se l'elaborazione e' stata annullata, la fase non e'
+    /// conclusa, e' stata interrotta. Un segno di spunta subito dopo un
+    /// «annullata» direbbe il contrario di quello che e' successo.
     fn drop(&mut self) {
+        if self.progresso.annullato() {
+            return;
+        }
         self.progresso.emetti(Evento::Conclusa {
             fase: self.fase,
             secondi: self.inizio.elapsed().as_secs_f64(),
@@ -278,6 +293,22 @@ mod tests {
         assert!(matches!(v[0], Evento::Iniziata { fase: Fase::Trascrizione }));
         assert!(matches!(v[1], Evento::Conclusa { fase: Fase::Trascrizione, .. }));
         assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn una_fase_annullata_non_si_dichiara_conclusa() {
+        // Un segno di spunta dopo un «annullata» direbbe che e' andata bene.
+        let (p, visti) = raccogli();
+        {
+            let _c = p.inizia(Fase::Scaricamento);
+            p.interruttore().annulla();
+        }
+        let e = visti.lock().unwrap();
+        assert!(matches!(e[0], Evento::Iniziata { .. }));
+        assert!(
+            !e.iter().any(|x| matches!(x, Evento::Conclusa { .. })),
+            "conclusa emessa dopo l'annullamento: {e:?}"
+        );
     }
 
     #[test]
