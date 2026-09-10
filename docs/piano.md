@@ -34,6 +34,25 @@ prima di leggere il resto:
    prova da questa macchina. Il primo push su un tag e' anche il loro primo
    collaudo.
 
+## Dopo la prima prova vera (10 settembre 2026)
+
+Sei aggiustamenti chiesti dopo aver usato l'applicazione. Cosa e' verificato e
+cosa no, uno per uno.
+
+| | Verificato | Come |
+|---|---|---|
+| GPU scelta a mano in Impostazioni | **a meta'** | Il menu si popola e ricorda la scelta (banco di prova); che il calcolo finisca davvero su quella scheda **non e' stato provato** |
+| Audio trattato come video | **si'** | `verba overlay prova.mp3` produce `alpha_mode=1` in WebM e `yuva444p12le` in ProRes 4444; la finestra Esporta li offre di nuovo |
+| Anteprima su nero per i file audio | **no** | Cambio di CSS, mai visto su un file audio nella finestra vera |
+| Whisper e allineatore insieme sopra il 20% | **si'** | Trascrizione vera di `prova.mp3` sulla Tesla P40: «restano caricati insieme: 22901 MiB liberi, ne servivano 7200», e lo scarico avviene dopo l'allineamento |
+| Riproduzione dell'audio | **no** | Il WAV si scrive e si rilegge (due test), ma **dalla finestra non e' mai stato sentito un suono** |
+| Editor dei termini noti | **a meta'** | Il pannello si apre, si scrive, si conta (banco di prova); il salvataggio passa dal comando Tauri, che non e' mai stato chiamato per davvero |
+| Modelli mancanti in evidenza | **a meta'** | La scheda d'avviso si vede con `?modelli=mancanti` nel banco; nella finestra vera i modelli ci sono e la scheda non compare |
+
+Quello che manca ha tutto la stessa causa: **da qui non si puo' cliccare** in
+una finestra GTK, e senza un clic non si carica un file. Il motore sotto e'
+pero' lo stesso gia' percorso dalla riga di comando.
+
 ## Fasi
 
 ### ✅ Fase 0 — Ristrutturazione, a comportamento invariato

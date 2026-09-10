@@ -36,11 +36,16 @@ nessun abbonamento, nessun limite di minuti. E' il motivo per cui esiste.
 La trascrizione **non passa da alcun file intermedio**: resta in RAM e alimenta
 direttamente l'impaginazione e il disegno dei fotogrammi.
 
-I tre modelli non sono mai residenti insieme: ogni fase carica il proprio
-modello e lo rilascia prima della successiva. In particolare **Whisper viene
-scaricato esplicitamente dalla GPU prima che l'allineatore venga caricato**
-(`Transcriber::release()`), e l'occupazione di VRAM viene tracciata nel log
-prima e dopo lo scarico.
+Su una macchina con poca memoria i modelli non sono mai residenti insieme: ogni
+fase carica il proprio e lo rilascia prima della successiva, e in particolare
+**Whisper viene scaricato esplicitamente dalla GPU prima che l'allineatore
+venga caricato** (`Transcriber::release()`).
+
+Dove la memoria abbonda quella staffetta e' solo tempo perso, e Verba misura
+invece di indovinare: se il libero supera del **20%** la somma stimata dei due
+modelli, restano caricati entrambi. La stima, la soglia e la memoria misurata
+finiscono nel log, insieme all'occupazione di VRAM prima e dopo ogni scarico —
+cosi' quale delle due strade sia stata presa si legge, non si deduce.
 
 ## Architettura
 
@@ -1016,12 +1021,20 @@ Fra le GPU idonee vince quella con piu' VRAM totale.
 La soglia di default e' 8000 MiB e non 8192: una scheda "da 8 GB" espone spesso
 8188 MiB, e una soglia in GiB stretti la escluderebbe per 4 MiB.
 
+Su una macchina con piu' schede la si sceglie: `--gpu INDICE` dalla riga di
+comando, il menu *Scheda* in Impostazioni nell'applicazione. La scelta
+automatica prende la piu' capiente, che non e' sempre la piu' veloce — una
+Tesla P40 da 24 GB e' piu' grande e piu' lenta di una RTX 4060 da 8. Chiedere
+*GPU* invece di *automatico* azzera anche la soglia: chi l'ha chiesta l'ha
+chiesta, e negargliela in silenzio sarebbe un modo elaborato di ignorare
+un'impostazione.
+
 ## Le altre schermate
 
 | | |
 |---|---|
 | ![Modifica](assets/schermate/modifica.png) | ![Esporta](assets/schermate/esporta.png) |
-| **Modifica** — l'anteprima a sinistra, i controlli a destra. Nessuna modifica qui rilancia il modello: tutto si applica entro un fotogramma. | **Esporta** — i formati che hanno senso per questo file. In modalita' audio quelli video non compaiono affatto. |
+| **Modifica** — l'anteprima a sinistra, i controlli a destra. Nessuna modifica qui rilancia il modello: tutto si applica entro un fotogramma. | **Esporta** — i formati che hanno senso per questo file. Da un file di solo audio restano quelli che conservano la trasparenza: non si imprimono sottotitoli su un filmato che non esiste. |
 
 ![Impostazioni](assets/schermate/impostazioni.png)
 
