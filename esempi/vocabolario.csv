@@ -1,0 +1,17 @@
+# Parole con cui inizializzare Whisper: nomi propri, sigle, termini tecnici.
+# La prima colonna e' quella letta; le altre servono solo a te.
+# Delimitatore, intestazione e virgolette sono riconosciuti da soli.
+termine,categoria,note
+Anthropic,azienda,
+Claude Opus,modello,
+wav2vec2,tecnico,allineatore CTC
+pyannote,tecnico,segmentazione
+Whisper large-v3,modello,
+ONNX Runtime,tecnico,
+"Milano, Italia",luogo,esempio con virgola nel termine
+Zerflyne,nome proprio,
+Qwen,modello
+GLM,modello
+Alibaba,azienda
+Z-AI,azienda
+AI,termine
