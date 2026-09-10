@@ -23,6 +23,7 @@ use anyhow::{bail, Context, Result};
 use cosmic_text::{fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight, Wrap};
 use tracing::debug;
 
+use crate::caratteri::{Catalogo, Esito};
 use crate::trascrizione::Parola;
 
 /// Formato del video di destinazione.
@@ -276,41 +277,65 @@ impl Blocco {
     }
 }
 
-/// Misura il testo con il font che verra' effettivamente disegnato.
+/// Misura il testo con il carattere che verra' effettivamente disegnato.
 pub struct Tipografo {
     /// Visibile nel crate perche' `render` deve poter disporre e rasterizzare
-    /// i glifi con lo stesso identico font usato per le misure.
+    /// i glifi con lo stesso identico carattere usato per le misure.
     pub(crate) font_system: FontSystem,
     pub(crate) famiglia: String,
+    pub(crate) peso: Weight,
     metriche: Metrics,
     buffer: Buffer,
     cache: HashMap<String, f32>,
 }
 
 impl Tipografo {
-    /// Carica un font statico `.ttf` (qui: Inter peso 700) e prepara il motore
-    /// di shaping.
+    /// Prepara il motore di composizione su una famiglia e un peso gia'
+    /// risolti contro il catalogo.
     ///
-    /// Il database dei font contiene **solo** questo file: nessuna scansione
-    /// del sistema, nessun rischio che una installazione diversa cambi la resa.
+    /// Misura e disegno usano lo stesso carattere: se qui si misurasse con uno
+    /// e li' si disegnasse con un altro, il testo uscirebbe dai margini in
+    /// modo apparentemente casuale.
+    pub fn dal_catalogo(
+        catalogo: Catalogo,
+        esito: &Esito,
+        corpo: f32,
+        interlinea: f32,
+    ) -> Result<Self> {
+        let famiglia = esito.famiglia().to_string();
+        let peso = Weight(esito.peso());
+        debug!(famiglia = %famiglia, peso = peso.0, "carattere scelto");
+        Self::costruisci(catalogo.in_database(), famiglia, peso, corpo, interlinea)
+    }
+
+    /// Carica un singolo file di carattere e ci compone sopra.
+    ///
+    /// Il database contiene **solo** questo file: nessuna scansione del
+    /// sistema, nessun rischio che una installazione diversa cambi la resa.
     pub fn nuovo(font: &[u8], corpo: f32, interlinea: f32) -> Result<Self> {
         let mut db = fontdb::Database::new();
         db.load_font_data(font.to_vec());
         let faccia = db
             .faces()
             .next()
-            .context("il file del font non contiene alcun volto tipografico")?;
+            .context("il file del carattere non contiene alcun volto tipografico")?;
         let famiglia = faccia
             .families
             .first()
             .map(|(nome, _)| nome.clone())
-            .context("il font non dichiara un nome di famiglia")?;
-        let peso = faccia.weight.0;
-        if peso != Weight::BOLD.0 {
-            debug!(peso, "il font caricato non e' di peso 700");
-        }
-        debug!(famiglia = %famiglia, peso, "font caricato");
+            .context("il carattere non dichiara un nome di famiglia")?;
+        let peso = faccia.weight;
+        debug!(famiglia = %famiglia, peso = peso.0, "carattere caricato da file");
+        Self::costruisci(db, famiglia, peso, corpo, interlinea)
+    }
 
+    fn costruisci(
+        db: fontdb::Database,
+        famiglia: String,
+        peso: Weight,
+        corpo: f32,
+        interlinea: f32,
+    ) -> Result<Self> {
         let mut font_system = FontSystem::new_with_locale_and_db("it-IT".to_string(), db);
         let metriche = Metrics::new(corpo, corpo * interlinea.max(1.0));
         let mut buffer = Buffer::new(&mut font_system, metriche);
@@ -319,11 +344,19 @@ impl Tipografo {
         buffer.set_wrap(&mut font_system, Wrap::None);
         buffer.set_size(&mut font_system, None, None);
 
-        Ok(Self { font_system, famiglia, metriche, buffer, cache: HashMap::new() })
+        Ok(Self { font_system, famiglia, peso, metriche, buffer, cache: HashMap::new() })
     }
 
     pub fn metriche(&self) -> Metrics {
         self.metriche
+    }
+
+    pub fn famiglia(&self) -> &str {
+        &self.famiglia
+    }
+
+    pub fn peso(&self) -> u16 {
+        self.peso.0
     }
 
     /// Larghezza in pixel del testo, con memoizzazione.
@@ -331,7 +364,7 @@ impl Tipografo {
         if let Some(&w) = self.cache.get(testo) {
             return w;
         }
-        let attrs = Attrs::new().family(Family::Name(&self.famiglia)).weight(Weight::BOLD);
+        let attrs = Attrs::new().family(Family::Name(&self.famiglia)).weight(self.peso);
         self.buffer.set_text(&mut self.font_system, testo, &attrs, Shaping::Advanced);
         self.buffer.shape_until_scroll(&mut self.font_system, false);
         let w = self.buffer.layout_runs().fold(0.0f32, |m, r| m.max(r.line_w));

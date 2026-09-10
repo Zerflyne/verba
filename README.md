@@ -187,6 +187,44 @@ parola indicata) vengono raggruppati: la conversione colore avviene una volta so
 e il fotogramma gia' convertito viene ricodificato. Su un audio di 9,6 s a 30 fps
 questo significa 26 disegni invece di 290.
 
+### I caratteri
+
+Di serie ce ne sono sei, tutti da Google Fonts con licenza OFL, in
+`assets/fonts` con le licenze accanto:
+
+| Famiglia | Pesi | Perche' c'e' |
+|---|---|---|
+| Inter | 400 700 900 | neutro, e' il predefinito |
+| Montserrat | 400 700 900 | geometrico, molto usato sui social |
+| Poppins | 400 700 900 | geometrico tondo |
+| Oswald | 400 700 | condensato: sta dentro il 9:16 anche con righe lunghe |
+| Anton | 400 | display pesante |
+| Bebas Neue | 400 | tutto maiuscolo, il classico dei sottotitoli |
+
+**Uno solo e' incorporato nel binario**, Inter 700: e' la ricaduta che non puo'
+mancare, cosi' un'installazione senza `assets/fonts` produce comunque un
+risultato invece di un errore.
+
+Chi ne vuole un altro non deve aspettare una nuova versione: scarica il `.ttf` e
+lo passa con `--font FILE`, oppure lo mette in una cartella e la aggiunge con
+`--cartella-caratteri`. Con `--caratteri-di-sistema` entrano nell'elenco anche
+quelli installati sulla macchina.
+
+Se la famiglia chiesta non c'e' si ricade su Inter, e se il peso non c'e' si usa
+**il piu' vicino** — a parita' di distanza il piu' pesante, perche' un
+sottotitolo sta meglio in grassetto. In entrambi i casi la sostituzione viene
+detta, non lasciata scoprire guardando il risultato:
+
+```
+WARN Il peso 900 non e' disponibile per Anton. E' stato usato il 400.
+WARN Il carattere «Comic Sans» non e' disponibile. Ne e' stato usato un altro: Inter.
+```
+
+I file di serie si rigenerano con `scripts/scarica_caratteri.py`, che scarica da
+Google Fonts e istanzia nei pesi che servono le famiglie pubblicate solo in
+forma variabile — cosmic-text sceglie il carattere per peso dichiarato, e da un
+file variabile ne leggerebbe uno solo.
+
 ## Prerequisiti di build
 
 ```bash
@@ -516,7 +554,12 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 
 | Opzione | Default | Descrizione |
 |---|---|---|
-| `--font` | Inter 700 incorporato | file `.ttf` alternativo |
+| `--carattere` | `Inter` | famiglia; `--caratteri` elenca quelle disponibili |
+| `--peso` | `700` | peso da 100 a 900; se manca si usa il piu' vicino e lo si dice |
+| `--font FILE` | — | un `.ttf` o `.otf` preciso, senza doverlo installare |
+| `--cartella-caratteri` | — | cartella con altri caratteri; ripetibile |
+| `--caratteri-di-sistema` | off | cerca anche fra i caratteri installati |
+| `--caratteri` | — | elenca i caratteri disponibili ed esce |
 | `--dimensione-font` | 6,5 % del lato minore | corpo in pixel, riferiti all'altezza del fotogramma |
 | `--margine` | `0.05` | distanza minima dai bordi: limite invalicabile |
 | `--larghezza-massima` | `0.80` | larghezza della colonna di testo, frazione della larghezza |
@@ -535,7 +578,10 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 
 | Opzione | Default | Descrizione |
 |---|---|---|
-| `--colore-evidenziazione` | `#7C3AED` | rettangolo dietro la parola in corso |
+| `--evidenziazione rettangolo\|sottolineatura\|solo-colore\|nessuna` | `rettangolo` | forma con cui si segnala la parola in corso |
+| `--colore-evidenziazione` | `#7C3AED` | colore della forma |
+| `--colore-attivo` | `#FFFFFF` | colore del testo della parola in corso |
+| `--spessore-sottolineatura` | `0.10` | spessore della barra, in frazione del corpo |
 | `--padding-evidenziazione` | `0.18` | margine oltre la parola, in frazione del corpo |
 | `--altezza-evidenziazione` | `1.12` | altezza del rettangolo, in frazione del corpo |
 | `--raggio-evidenziazione` | `0.20` | raggio degli angoli, in frazione del corpo |
@@ -551,6 +597,10 @@ come interpretarla, va scelta *straight* / *non premultiplied*.
 | `--colore` | `#FFFFFF` | testo, `#RRGGBB` o `#RRGGBBAA` |
 | `--colore-bordo` | `#000000` | contorno del testo |
 | `--bordo` | `0.0` | spessore del contorno in pixel |
+| `--senza-ombra` | off | spegne l'ombra, che di serie e' accesa |
+| `--colore-ombra` | `#000000A0` | colore dell'ombra |
+| `--ombra-spostamento` | `0.05` | spostamento verso il basso, in frazione del corpo |
+| `--ombra-sfocatura` | `0.08` | sfocatura, in frazione del corpo |
 
 **Trascrizione, uscite accessorie e dispositivo**
 

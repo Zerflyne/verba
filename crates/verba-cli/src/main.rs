@@ -31,6 +31,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use verba_core::audio::{AudioInput, NormalizeMode, PreprocessConfig};
+use verba_core::caratteri::{self, Catalogo, Richiesta};
 use verba_core::eventi::Fase;
 use verba_core::layout::{Allineamento, Attivazione, Formato, LayoutConfig, Tipografo};
 use verba_core::pipeline::{self, ConfigTrascrizione, PercorsiModelli};
@@ -40,7 +41,7 @@ use verba_core::segmentation::SegmentationConfig;
 use verba_core::srt::{SrtConfig, SrtMode};
 use verba_core::transcribe::WhisperConfig;
 use verba_core::video::{self, VideoConfig};
-use verba_core::{align, audio, gpu, layout, srt, FONT_INTER_BOLD};
+use verba_core::{align, audio, gpu, layout, srt};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -51,7 +52,9 @@ use verba_core::{align, audio, gpu, layout, srt, FONT_INTER_BOLD};
 struct Cli {
     /// Sorgenti audio: percorsi di qualsiasi formato, oppure `-` per stdin.
     /// Piu' sorgenti vengono concatenate.
-    #[arg(required = true, num_args = 1..)]
+    /// Non serve con le opzioni che si limitano a mostrare qualcosa
+    /// (`--caratteri`, `--solo-prompt`).
+    #[arg(num_args = 1..)]
     input: Vec<String>,
 
     /// File video di uscita, MOV con ProRes 4444 (default: <primo input>.mov).
@@ -207,9 +210,32 @@ struct Cli {
     qualita: u32,
 
     // ---- tipografia e impaginazione ----
-    /// File `.ttf` da usare al posto di Inter 700, che e' incorporato.
+    /// Famiglia del carattere. Usa --caratteri per vedere quali ci sono.
+    #[arg(long, default_value = caratteri::FAMIGLIA_PREDEFINITA)]
+    carattere: String,
+
+    /// Peso del carattere, da 100 a 900. Se la famiglia non ha quel peso viene
+    /// usato il piu' vicino, e lo si dice.
+    #[arg(long, default_value_t = caratteri::PESO_PREDEFINITO)]
+    peso: u16,
+
+    /// Un file `.ttf` o `.otf` da usare, senza doverlo installare. Ha la
+    /// precedenza su --carattere.
     #[arg(long, value_name = "FILE")]
     font: Option<PathBuf>,
+
+    /// Cartella con altri caratteri da aggiungere all'elenco. Ripetibile.
+    #[arg(long, value_name = "CARTELLA")]
+    cartella_caratteri: Vec<PathBuf>,
+
+    /// Cerca anche fra i caratteri installati sul sistema, oltre a quelli di
+    /// serie.
+    #[arg(long)]
+    caratteri_di_sistema: bool,
+
+    /// Elenca i caratteri disponibili con i loro pesi ed esce.
+    #[arg(long)]
+    caratteri: bool,
 
     /// Corpo del font in pixel (default: 6,5 % del lato minore del fotogramma).
     #[arg(long, value_name = "PIXEL")]
@@ -460,12 +486,21 @@ fn main() -> Result<()> {
     };
     let initial_prompt = prompt::build(&prompt_cfg)?;
 
+    if cli.caratteri {
+        elenca_caratteri(&cli);
+        return Ok(());
+    }
+
     if cli.solo_prompt {
         match &initial_prompt {
             Some(p) => println!("{p}"),
             None => println!("(nessun initial prompt configurato)"),
         }
         return Ok(());
+    }
+
+    if cli.input.is_empty() {
+        bail!("serve almeno un file da trascrivere (oppure `-` per leggere da stdin)");
     }
 
     // Le impostazioni grafiche vengono validate subito: un colore scritto male
@@ -543,12 +578,13 @@ fn main() -> Result<()> {
     // ---------------------------------------------------------------- fase 4
     // Impaginazione: le parole diventano righe — una alla volta a schermo —
     // misurate sul font che verra' effettivamente disegnato.
-    let font = match &cli.font {
-        Some(p) => std::fs::read(p).with_context(|| format!("lettura del font {}", p.display()))?,
-        None => FONT_INTER_BOLD.to_vec(),
-    };
-    let mut tipografo = Tipografo::nuovo(&font, layout_cfg.corpo(), layout_cfg.interlinea)
-        .context("caricamento del font")?;
+    let (tipografo, esito_carattere) = costruisci_tipografo(&cli, &layout_cfg)?;
+    if let Some(avviso) = esito_carattere.avviso() {
+        warn!("{avviso}");
+        progresso.avviso(avviso);
+    }
+    let mut tipografo = tipografo;
+
     let blocchi = {
         let _c = progresso.inizia(Fase::Impaginazione);
         layout::impagina(parole, &mut tipografo, &layout_cfg)?
@@ -626,6 +662,53 @@ fn main() -> Result<()> {
 
     gpu::log_vram(&device, "finale");
     Ok(())
+}
+
+/// Il catalogo dei caratteri secondo le opzioni date.
+fn catalogo(cli: &Cli) -> Catalogo {
+    let mut cartelle = caratteri::cartelle_predefinite();
+    cartelle.extend(cli.cartella_caratteri.iter().cloned());
+    Catalogo::nuovo(&cartelle, cli.caratteri_di_sistema)
+}
+
+/// Stampa i caratteri disponibili con i loro pesi.
+fn elenca_caratteri(cli: &Cli) {
+    let c = catalogo(cli);
+    println!("Caratteri disponibili ({}):\n", c.famiglie().len());
+    for f in c.famiglie() {
+        let pesi: Vec<String> = f.pesi.iter().map(|p| p.to_string()).collect();
+        println!(
+            "  {:<28} {:<24} {}",
+            f.nome,
+            pesi.join(" "),
+            if f.di_serie { "di serie" } else { "" }
+        );
+    }
+    if !cli.caratteri_di_sistema {
+        println!("\nCon --caratteri-di-sistema si aggiungono quelli installati sulla macchina.");
+    }
+    println!(
+        "Per usarne un altro: scaricare il .ttf e passarlo con --font FILE, oppure metterlo in\n\
+         una cartella e passarla con --cartella-caratteri CARTELLA."
+    );
+}
+
+/// Sceglie il carattere e prepara il motore di composizione.
+fn costruisci_tipografo(
+    cli: &Cli,
+    layout_cfg: &LayoutConfig,
+) -> Result<(Tipografo, caratteri::Esito)> {
+    let mut cat = catalogo(cli);
+    let richiesta = Richiesta {
+        famiglia: cli.carattere.clone(),
+        peso: cli.peso,
+        file: cli.font.clone(),
+    };
+    let esito = cat.risolvi(&richiesta)?;
+    let tipografo =
+        Tipografo::dal_catalogo(cat, &esito, layout_cfg.corpo(), layout_cfg.interlinea)
+            .context("preparazione del carattere")?;
+    Ok((tipografo, esito))
 }
 
 fn configura_layout(cli: &Cli) -> Result<LayoutConfig> {

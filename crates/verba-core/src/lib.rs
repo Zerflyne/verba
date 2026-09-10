@@ -27,6 +27,7 @@
 
 pub mod align;
 pub mod audio;
+pub mod caratteri;
 pub mod encoder;
 pub mod eventi;
 pub mod gpu;

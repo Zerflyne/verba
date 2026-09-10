@@ -19,7 +19,7 @@
 //! L'alfa prodotta e' **dritta** (non premoltiplicata): e' quello che si aspetta
 //! l'encoder ProRes 4444 e, a valle, qualsiasi montaggio video.
 
-use cosmic_text::{Attrs, Buffer, Family, Shaping, SwashCache, SwashContent, Weight};
+use cosmic_text::{Attrs, Buffer, Family, Shaping, SwashCache, SwashContent};
 
 use crate::layout::{Allineamento, Blocco, LayoutConfig, Tipografo};
 
@@ -345,7 +345,11 @@ impl Rasterizzatore {
         // spazi) e il rettangolo si scosterebbe dal testo.
         let mut geometrie = vec![GeometriaParola::vuota(); blocco.parole.len()];
 
-        let attrs = Attrs::new().family(Family::Name(&self.tipografo.famiglia)).weight(Weight::BOLD);
+        // La famiglia viene copiata: gli attributi la prendono in prestito, e
+        // il prestito non puo' convivere con quello mutabile del motore di
+        // composizione.
+        let famiglia = self.tipografo.famiglia.clone();
+        let attrs = Attrs::new().family(Family::Name(&famiglia)).weight(self.tipografo.peso);
 
         for (k, riga) in blocco.righe.iter().enumerate() {
             let y_riga = y_blocco + k as f32 * altezza_riga;
