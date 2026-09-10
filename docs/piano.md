@@ -14,16 +14,20 @@ precedente sia verificata.
 
 ## Stato
 
-Fatte le fasi da 0 a 8, ognuna verificata prima della successiva. Resta la
-Fase 9: licenza, changelog, i due documenti in `docs/` e i workflow di build.
+Fatte tutte e dieci le fasi, ognuna verificata prima della successiva.
 
-Una nota sulla Fase 8: il codice dell'applicazione e' scritto per intero
-— comandi Tauri e interfaccia — e l'interfaccia e' stata provata in un
-browser, ma **la finestra non e' mai stata compilata su questa macchina**:
-mancano le librerie di sistema (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
-`libdbus-1-dev`), la cui installazione richiede i permessi di
-amministratore. Finche' quel comando non viene dato, la Fase 8 va considerata
-scritta e non verificata.
+Due cose restano **scritte e non verificate**, ed e' giusto che si sappia
+prima di leggere il resto:
+
+1. Il codice dell'applicazione e' scritto per intero — comandi Tauri e
+   interfaccia — e l'interfaccia e' stata percorsa tutta in un browser, ma
+   **la finestra non e' mai stata compilata su questa macchina**: mancano le
+   librerie di sistema (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
+   `libdbus-1-dev`), e installarle richiede i permessi di amministratore.
+
+2. I due workflow di CI non sono mai stati eseguiti: GitHub Actions non si
+   prova da questa macchina. Il primo push su un tag e' anche il loro primo
+   collaudo.
 
 ## Fasi
 
@@ -94,12 +98,29 @@ browser (i quattro stati di Carica, il pannello di Modifica, l'elenco dei
 formati, le impostazioni); il guscio Tauri **non e' stato compilato** perche'
 mancano le librerie di sistema.
 
-### Fase 9 — Repository e distribuzione
-README, LICENSE, CHANGELOG, CONTRIBUTING, `docs/termini.md`, `docs/tempi.md`,
-workflow di build per `.deb`, `.AppImage` e `.exe`.
+### ✅ Fase 9 — Repository e distribuzione
+README con lo screenshot in testa e i limiti noti in alto, LICENSE (MIT),
+CHANGELOG, CONTRIBUTING, `docs/termini.md`, `docs/tempi.md` con i diagrammi
+generati dal codice, workflow di verifica e di rilascio per `.deb`,
+`.AppImage` e `.exe`.
+**Verificata a meta'**: i documenti e le figure ci sono e sono stati
+riletti; **i workflow non sono mai stati eseguiti**, perche' GitHub Actions non
+si prova da qui.
 
-## Ordine di verifica
+## Come rimettere in piedi le due verifiche mancanti
 
-I punti da 1 a 6 sono l'applicazione vera. Se il tempo finisce, un progetto
-fermo alla fine della Fase 6 con una buona riga di comando e' comunque
-pubblicabile, come dice la spec.
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
+                 libayatana-appindicator3-dev librsvg2-dev \
+                 libdbus-1-dev patchelf
+npm install --prefix ui
+cargo build -p verba-app --release
+```
+
+Poi `cargo tauri dev --config crates/verba-app/tauri.conf.json` apre la
+finestra vera, con il motore dietro invece del banco di prova. Il percorso da
+provare e' quello della spec: trascinare un file, aspettare le fasi, guardare
+l'anteprima, cambiare qualcosa in Modifica, esportare.
+
+Per i workflow basta il primo push: `verifica.yml` parte su qualsiasi commit,
+`rilascio.yml` su un tag `v0.1.0`.
