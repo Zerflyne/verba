@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, State};
 
@@ -420,13 +420,13 @@ pub struct FormatoVisto {
     alfa: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 pub struct FormatiDisponibili {
     video: Vec<FormatoVisto>,
     testo: Vec<FormatoTesto>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 pub struct FormatoTesto {
     id: &'static str,
     etichetta: &'static str,
