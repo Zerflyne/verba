@@ -78,6 +78,31 @@ per chi usa Verba, non per chi ne legge i commit.
 - La durata minima di una parola passa da 40 a 80 ms.
 
 ### Corretto
+- **L'audio dell'anteprima non si sentiva.** La traccia arrivava alla webview
+  come indirizzo `asset://`, e WebKitGTK rifiuta gli schemi personalizzati per
+  i contenuti multimediali: l'elemento falliva con «formato o indirizzo non
+  supportati» prima ancora di leggere un byte. Ora il WAV viaggia sull'IPC e
+  diventa un `blob:`, che WebKit accetta. Sparisce anche il file temporaneo.
+- **Il fotogramma d'anteprima usciva dalla sua scatola.** Un `max-height: 100%`
+  su un elemento di griglia con riga automatica si misura su un'altezza
+  indefinita, cioe' non vincola niente: un video 1920×1080 traboccava da un
+  riquadro di 1316×657. Il riquadro ora centra con flex, che un'altezza
+  definita ce l'ha.
+- **I fotogrammi non scorrevano durante la riproduzione.** Ogni cambio di
+  posizione faceva avanzare il numero di richiesta, e al ritorno l'immagine
+  veniva scartata perche' quel numero non era piu' l'ultimo: con l'orologio che
+  cambia sessanta volte al secondo, veniva scartata *ogni* immagine e
+  l'anteprima restava sul fotogramma in cui si era premuto play.
+- **In Modifica il trasporto finiva sotto il bordo della finestra.** Alla
+  colonna di sinistra mancava `min-height: 0`: senza, un elemento di griglia non
+  puo' rimpicciolirsi sotto il proprio contenuto, e una tela alta 1920 px la
+  faceva crescere finche' i comandi di riproduzione uscivano dallo schermo.
+- Il cursore parte dalla prima parola invece che da `00:00`, dove quasi nessun
+  file ha gia' qualcosa da mostrare: l'anteprima sembrava vuota appena aperta.
+- Gli errori della webview — eccezioni, promesse rifiutate, fallimenti
+  dell'elemento audio, fotogrammi non disegnati — finiscono nel log del motore.
+  Senza, un difetto dentro la finestra si manifesta come un riquadro nero e
+  nient'altro.
 - La conversione colore YUV→RGB segue la convenzione dei lettori quando il file
   non dichiara lo spazio colore (BT.601 sotto i 576 punti di altezza, BT.709
   sopra): prima si usava sempre BT.709, con una deriva visibile sui file non

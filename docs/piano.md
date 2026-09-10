@@ -22,17 +22,16 @@ arrivato fino a NVML e tornato indietro. Compilando davvero e' saltato fuori
 un errore che nessuna rilettura aveva visto — `FormatiDisponibili` e
 `FormatoTesto` derivavano `Deserialize` senza poterlo fare — ed e' corretto.
 
-Restano **due cose scritte e non verificate**, ed e' giusto che si sappia
-prima di leggere il resto:
+Resta **una cosa scritta e non verificata**: i due workflow di CI non sono
+mai stati eseguiti. GitHub Actions non si prova da questa macchina, e il primo
+push su un tag e' anche il loro primo collaudo.
 
-1. Nessun file e' mai stato caricato *dalla finestra*. Il percorso completo
-   della spec — trascina, aspetta le fasi, guarda l'anteprima, esporta —
-   richiede un click, e da qui non si sintetizza (niente `xdotool`).
-   Il motore sotto e' pero' lo stesso gia' provato dalla riga di comando.
-
-2. I due workflow di CI non sono mai stati eseguiti: GitHub Actions non si
-   prova da questa macchina. Il primo push su un tag e' anche il loro primo
-   collaudo.
+Il file caricato *dalla finestra*, che prima mancava, ora c'e'. I clic si
+sintetizzano con XTEST, ma con un'avvertenza che e' costata tempo: il server X
+consegna il clic sintetico alla finestra piu' in alto in quel punto, e mutter
+ignora le richieste di sollevamento fatte dal client. Finche' non si manda un
+`_NET_ACTIVE_WINDOW` alla radice, i clic finiscono a chi sta sopra e sembra
+semplicemente che l'applicazione non risponda.
 
 ## Dopo la prima prova vera (10 settembre 2026)
 
@@ -41,17 +40,19 @@ cosa no, uno per uno.
 
 | | Verificato | Come |
 |---|---|---|
-| GPU scelta a mano in Impostazioni | **a meta'** | Il menu si popola e ricorda la scelta (banco di prova); che il calcolo finisca davvero su quella scheda **non e' stato provato** |
+| GPU scelta a mano in Impostazioni | **a meta'** | Il menu si popola e ricorda la scelta; che il calcolo finisca davvero sulla scheda scelta **non e' stato provato** (qui ce n'e' una sola) |
 | Audio trattato come video | **si'** | `verba overlay prova.mp3` produce `alpha_mode=1` in WebM e `yuva444p12le` in ProRes 4444; la finestra Esporta li offre di nuovo |
-| Anteprima su nero per i file audio | **no** | Cambio di CSS, mai visto su un file audio nella finestra vera |
+| Anteprima su nero per i file audio | **si'** | `prova.mp3` aperto nella finestra vera: fotogramma nero, sottotitolo sopra, contorno chiaro attorno alla tela per non confonderla con lo sfondo |
 | Whisper e allineatore insieme sopra il 20% | **si'** | Trascrizione vera di `prova.mp3` sulla Tesla P40: «restano caricati insieme: 22901 MiB liberi, ne servivano 7200», e lo scarico avviene dopo l'allineamento |
-| Riproduzione dell'audio | **no** | Il WAV si scrive e si rilegge (due test), ma **dalla finestra non e' mai stato sentito un suono** |
-| Editor dei termini noti | **a meta'** | Il pannello si apre, si scrive, si conta (banco di prova); il salvataggio passa dal comando Tauri, che non e' mai stato chiamato per davvero |
+| Riproduzione dell'audio | **si', per quel che si puo' vedere** | Il `<audio>` accetta il blob, `play()` non viene rifiutata, l'elemento fa da orologio e i fotogrammi scorrono con lui. Il suono in se' da qui non si sente: quello resta da confermare a orecchio |
+| Editor dei termini noti | **a meta'** | Il pannello si apre, si scrive, si conta; il salvataggio passa dal comando Tauri, che non e' mai stato chiamato per davvero |
 | Modelli mancanti in evidenza | **a meta'** | La scheda d'avviso si vede con `?modelli=mancanti` nel banco; nella finestra vera i modelli ci sono e la scheda non compare |
 
-Quello che manca ha tutto la stessa causa: **da qui non si puo' cliccare** in
-una finestra GTK, e senza un clic non si carica un file. Il motore sotto e'
-pero' lo stesso gia' percorso dalla riga di comando.
+Aprendo davvero un file dalla finestra sono saltati fuori quattro difetti che
+nessuna rilettura aveva visto, tutti nell'anteprima: l'audio che non partiva,
+la tela senza misura, i fotogrammi fermi durante la riproduzione e la colonna
+di Modifica che spingeva il trasporto sotto il bordo. Sono descritti nel
+diario, alla voce *Corretto*.
 
 ## Fasi
 
@@ -134,7 +135,7 @@ generati dal codice, workflow di verifica e di rilascio per `.deb`,
 riletti; **i workflow non sono mai stati eseguiti**, perche' GitHub Actions non
 si prova da qui.
 
-## Come rimettere in piedi le due verifiche mancanti
+## Come rimettere in piedi la verifica mancante
 
 Su una macchina dove le librerie non ci sono ancora:
 

@@ -71,7 +71,7 @@ export function Modifica(p: Props) {
 
       <div className="corpo">
         <div className="due-colonne">
-          <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <div className="colonna-anteprima">
             <Anteprima
               tempo={p.tempo}
               larghezza={p.larghezza}
