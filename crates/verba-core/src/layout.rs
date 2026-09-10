@@ -23,7 +23,7 @@ use anyhow::{bail, Context, Result};
 use cosmic_text::{fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight, Wrap};
 use tracing::debug;
 
-use crate::align::Word;
+use crate::trascrizione::Parola;
 
 /// Formato del video di destinazione.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +160,7 @@ pub struct Riga {
 /// Un blocco di sottotitoli: la riga visibile in un dato istante.
 #[derive(Debug, Clone)]
 pub struct Blocco {
-    pub parole: Vec<Word>,
+    pub parole: Vec<Parola>,
     pub riga: Riga,
     /// Istante in cui la riga compare.
     pub start: f64,
@@ -251,7 +251,7 @@ impl Tipografo {
 ///
 /// `parole` deve essere gia' passata per [`crate::align::ripulisci`]: qui si
 /// assume una sequenza ordinata, senza buchi e monotona.
-pub fn impagina(parole: &[Word], tipografo: &mut Tipografo, cfg: &LayoutConfig) -> Result<Vec<Blocco>> {
+pub fn impagina(parole: &[Parola], tipografo: &mut Tipografo, cfg: &LayoutConfig) -> Result<Vec<Blocco>> {
     let larghezza_utile = cfg.larghezza_utile();
     if larghezza_utile <= 0.0 {
         bail!("il margine orizzontale non lascia spazio al testo");
@@ -262,8 +262,8 @@ pub fn impagina(parole: &[Word], tipografo: &mut Tipografo, cfg: &LayoutConfig) 
     let mut blocchi: Vec<Blocco> = Vec::with_capacity(gruppi.len());
     for gruppo in gruppi {
         let riga = componi_riga(&gruppo, tipografo);
-        let start = gruppo.first().map(|w| w.start).unwrap_or(0.0);
-        let end = gruppo.last().map(|w| w.end).unwrap_or(start);
+        let start = gruppo.first().map(|w| w.inizio).unwrap_or(0.0);
+        let end = gruppo.last().map(|w| w.fine).unwrap_or(start);
         blocchi.push(Blocco { parole: gruppo, riga, start, end, finestre: Vec::new() });
     }
 
@@ -275,26 +275,26 @@ pub fn impagina(parole: &[Word], tipografo: &mut Tipografo, cfg: &LayoutConfig) 
 
 /// Raggruppa le parole nelle righe che compaiono una alla volta sullo schermo.
 fn raggruppa(
-    parole: &[Word],
+    parole: &[Parola],
     tipografo: &mut Tipografo,
     cfg: &LayoutConfig,
     larghezza_utile: f32,
-) -> Vec<Vec<Word>> {
-    let mut gruppi: Vec<Vec<Word>> = Vec::new();
-    let mut corrente: Vec<Word> = Vec::new();
+) -> Vec<Vec<Parola>> {
+    let mut gruppi: Vec<Vec<Parola>> = Vec::new();
+    let mut corrente: Vec<Parola> = Vec::new();
     let mut testo = String::new();
 
     for (i, w) in parole.iter().enumerate() {
         if !corrente.is_empty() {
             let precedente = &parole[i - 1];
-            let pausa = w.start - precedente.end;
-            let durata = w.end - corrente[0].start;
+            let pausa = w.inizio - precedente.fine;
+            let durata = w.fine - corrente[0].inizio;
 
-            let candidato = format!("{testo} {}", w.text);
+            let candidato = format!("{testo} {}", w.testo);
             let sta_nella_riga = tipografo.misura(&candidato) <= larghezza_utile;
 
             let chiudi = pausa > cfg.pausa_max
-                || w.segment != precedente.segment
+                || w.segmento != precedente.segmento
                 || durata > cfg.durata_max
                 || !sta_nella_riga;
             if chiudi {
@@ -306,11 +306,11 @@ fn raggruppa(
         if !testo.is_empty() {
             testo.push(' ');
         }
-        testo.push_str(&w.text);
+        testo.push_str(&w.testo);
         corrente.push(w.clone());
 
         // Fine frase: e' il punto di taglio piu' naturale.
-        if w.text.ends_with(['.', '!', '?', '…', ':']) {
+        if w.testo.ends_with(['.', '!', '?', '…', ':']) {
             gruppi.push(std::mem::take(&mut corrente));
             testo.clear();
         }
@@ -323,7 +323,7 @@ fn raggruppa(
 
 /// Unisce le parole del blocco in una riga, tenendo traccia di dove ciascuna
 /// finisce nella stringa: e' l'ancora che il disegno usa per ritrovare i glifi.
-fn componi_riga(parole: &[Word], tipografo: &mut Tipografo) -> Riga {
+fn componi_riga(parole: &[Parola], tipografo: &mut Tipografo) -> Riga {
     let mut testo = String::new();
     let mut in_riga = Vec::with_capacity(parole.len());
     for (indice, w) in parole.iter().enumerate() {
@@ -331,7 +331,7 @@ fn componi_riga(parole: &[Word], tipografo: &mut Tipografo) -> Riga {
             testo.push(' ');
         }
         let inizio = testo.len();
-        testo.push_str(&w.text);
+        testo.push_str(&w.testo);
         in_riga.push(ParolaInRiga { indice, byte: inizio..testo.len() });
     }
     let larghezza = tipografo.misura(&testo);
@@ -348,13 +348,13 @@ fn assesta_tempi(blocchi: &mut [Blocco], cfg: &LayoutConfig) {
     // parola della riga precedente: quella deve restare leggibile fino in fondo.
     let mut fine_parole_precedenti = 0.0f64;
     for b in blocchi.iter_mut() {
-        b.start = (b.parole[0].start - anticipo).max(fine_parole_precedenti).max(0.0);
-        fine_parole_precedenti = b.parole.last().map(|w| w.end).unwrap_or(b.start);
+        b.start = (b.parole[0].inizio - anticipo).max(fine_parole_precedenti).max(0.0);
+        fine_parole_precedenti = b.parole.last().map(|w| w.fine).unwrap_or(b.start);
     }
 
     for i in 0..blocchi.len() {
         let limite = blocchi.get(i + 1).map(|b| b.start).unwrap_or(f64::INFINITY);
-        let ultima = blocchi[i].parole.last().map(|w| w.end).unwrap_or(blocchi[i].start);
+        let ultima = blocchi[i].parole.last().map(|w| w.fine).unwrap_or(blocchi[i].start);
         blocchi[i].end = (ultima + cfg.tenuta).min(limite).max(blocchi[i].start);
     }
 }
@@ -373,13 +373,13 @@ fn calcola_finestre(blocchi: &mut [Blocco], cfg: &LayoutConfig) {
         let n = b.parole.len();
         let mut finestre = Vec::with_capacity(n);
         for i in 0..n {
-            let inizio = (b.parole[i].start - anticipo).max(b.start);
+            let inizio = (b.parole[i].inizio - anticipo).max(b.start);
             let fine = match b.parole.get(i + 1) {
                 Some(succ) => {
-                    (b.parole[i].end + pausa_max).min((succ.start - anticipo).max(inizio))
+                    (b.parole[i].fine + pausa_max).min((succ.inizio - anticipo).max(inizio))
                 }
                 // Oltre la fine della riga non si disegna comunque nulla.
-                None => (b.parole[i].end + coda).min(b.end),
+                None => (b.parole[i].fine + coda).min(b.end),
             };
             finestre.push((inizio, fine.max(inizio)));
         }
@@ -401,8 +401,8 @@ mod tests {
         LayoutConfig { dimensione_font: Some(64.0), ..Default::default() }
     }
 
-    fn w(text: &str, start: f64, end: f64) -> Word {
-        Word { text: text.into(), start, end, score: 1.0, segment: 0 }
+    fn w(testo: &str, inizio: f64, fine: f64) -> Parola {
+        Parola::nuova(testo, inizio, fine)
     }
 
     #[test]
@@ -435,7 +435,7 @@ mod tests {
     fn ogni_blocco_ha_una_riga_sola_dentro_la_larghezza_utile() {
         let mut t = tipografo(64.0);
         let cfg = cfg();
-        let parole: Vec<Word> = "il rapido allineamento delle parole permette sottotitoli precisi e leggibili anche in verticale"
+        let parole: Vec<Parola> = "il rapido allineamento delle parole permette sottotitoli precisi e leggibili anche in verticale"
             .split(' ')
             .enumerate()
             .map(|(i, p)| w(p, i as f64 * 0.4, i as f64 * 0.4 + 0.35))
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn i_blocchi_non_si_sovrappongono_e_coprono_tutte_le_parole() {
         let mut t = tipografo(64.0);
-        let parole: Vec<Word> = (0..40)
+        let parole: Vec<Parola> = (0..40)
             .map(|i| w("parola", i as f64 * 0.3, i as f64 * 0.3 + 0.25))
             .collect();
         let blocchi = impagina(&parole, &mut t, &cfg()).unwrap();
@@ -495,7 +495,7 @@ mod tests {
         let blocchi = impagina(&parole, &mut t, &cfg()).unwrap();
         for b in &blocchi {
             for p in &b.riga.parole {
-                assert_eq!(&b.riga.testo[p.byte.clone()], b.parole[p.indice].text);
+                assert_eq!(&b.riga.testo[p.byte.clone()], b.parole[p.indice].testo);
             }
         }
     }
@@ -561,7 +561,7 @@ mod tests {
     #[test]
     fn le_finestre_sono_ordinate_e_disgiunte() {
         let mut t = tipografo(64.0);
-        let parole: Vec<Word> = (0..12)
+        let parole: Vec<Parola> = (0..12)
             .map(|i| w("parola", i as f64 * 0.35, i as f64 * 0.35 + 0.30))
             .collect();
         for b in impagina(&parole, &mut t, &cfg()).unwrap() {

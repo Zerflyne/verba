@@ -12,6 +12,10 @@
 //! * [`segmentation`] — pyannote in ONNX;
 //! * [`transcribe`] — Whisper large-v3 via whisper.cpp;
 //! * [`align`] — allineamento forzato CTC con wav2vec2-italian in ONNX;
+//! * [`trascrizione`] — la sequenza di parole, mutabile e con identificativi
+//!   stabili, separata dal risultato grezzo del modello;
+//! * [`pulizia`] — normalizzazione della sequenza: e' su questa funzione che si
+//!   regge tutto cio' che viene dopo;
 //! * [`layout`] — impaginazione dei sottotitoli misurata con cosmic-text;
 //! * [`render`] — disegno dei fotogrammi RGBA a sfondo trasparente;
 //! * [`encoder`] — encoder ProRes 4444 (libavcodec/libavformat, C++);
@@ -26,10 +30,12 @@ pub mod gpu;
 pub mod layout;
 pub mod onnx;
 pub mod prompt;
+pub mod pulizia;
 pub mod render;
 pub mod segmentation;
 pub mod srt;
 pub mod transcribe;
+pub mod trascrizione;
 pub mod video;
 
 /// Inter peso 700 (statico, `.ttf`), incorporato nel binario.

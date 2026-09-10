@@ -16,26 +16,13 @@ use anyhow::{bail, Context, Result};
 use ndarray::Array2;
 use ort::session::Session;
 use ort::value::TensorRef;
-use serde::Serialize;
 use tracing::{debug, info, warn};
 
 use crate::audio::{self, Pcm};
 use crate::gpu::{self, Device};
 use crate::onnx::{build_session, log_softmax};
 use crate::transcribe::Transcript;
-
-/// Una parola con i suoi tempi assoluti nel file originale.
-#[derive(Debug, Clone, Serialize)]
-pub struct Word {
-    /// Testo come mostrato all'utente (punteggiatura e maiuscole preservate).
-    pub text: String,
-    pub start: f64,
-    pub end: f64,
-    /// Confidenza media dell'allineamento, in [0, 1].
-    pub score: f32,
-    /// Indice del segmento di provenienza.
-    pub segment: usize,
-}
+use crate::trascrizione::{Parola, Trascrizione};
 
 #[derive(Debug, Clone)]
 pub struct AlignConfig {
@@ -172,9 +159,13 @@ impl Aligner {
         Ok(Self { session, vocab, cfg, input_name, input_rank })
     }
 
-    /// Allinea tutti i segmenti trascritti; ritorna le parole in ordine
-    /// temporale con tempi assoluti.
-    pub fn run(&mut self, pcm: &Pcm, transcripts: &[Transcript]) -> Result<Vec<Word>> {
+    /// Allinea tutti i segmenti trascritti.
+    ///
+    /// Il risultato grezzo esce di qui e finisce in una [`Trascrizione`], che
+    /// lo conserva accanto alla versione normalizzata: da quel momento in poi
+    /// il resto del programma lavora sulla seconda e puo' sempre risalire alla
+    /// prima.
+    pub fn run(&mut self, pcm: &Pcm, transcripts: &[Transcript]) -> Result<Trascrizione> {
         let mut words = Vec::new();
         let mut falliti = 0usize;
 
@@ -195,26 +186,27 @@ impl Aligner {
             };
 
             for (w, (rel_start, rel_end, score)) in seg_words.iter().zip(aligned) {
-                words.push(Word {
-                    text: (*w).to_string(),
-                    start: tr.segment.start + rel_start,
-                    end: tr.segment.start + rel_end,
-                    score,
-                    segment: idx,
+                words.push(Parola {
+                    id: Default::default(),
+                    testo: (*w).to_string(),
+                    inizio: tr.segment.start + rel_start,
+                    fine: tr.segment.start + rel_end,
+                    confidenza: score,
+                    segmento: idx,
                 });
             }
         }
 
-        let words = ripulisci(words, pcm.duration_secs(), DURATA_MINIMA_PAROLA);
+        let trascrizione = Trascrizione::nuova(words, pcm.duration_secs());
 
-        let deboli = words.iter().filter(|w| w.score < self.cfg.low_score_warn).count();
+        let deboli = trascrizione.incerte(self.cfg.low_score_warn).count();
         info!(
-            parole = words.len(),
+            parole = trascrizione.len(),
             segmenti_in_fallback = falliti,
             parole_a_bassa_confidenza = deboli,
             "allineamento parola-per-parola completato"
         );
-        Ok(words)
+        Ok(trascrizione)
     }
 
     /// Allinea un singolo segmento: ritorna (inizio, fine, score) relativi al
@@ -469,170 +461,6 @@ fn fallback_spans(words: &[&str], duration: f64) -> Vec<(f64, f64, f32)> {
     out
 }
 
-/// Durata minima attribuita a una parola, in secondi.
-pub const DURATA_MINIMA_PAROLA: f64 = 0.04;
-
-/// Normalizza la sequenza di parole prodotta dall'allineamento.
-///
-/// A valle (raggruppamento in battute, resa SRT, export JSON) si assume una
-/// sequenza **ordinata e senza buchi**: questa funzione e' il punto in cui
-/// quell'invariante viene stabilita, una volta sola.
-///
-/// In ordine:
-///
-/// 1. **scarta le parole vuote** (testo assente o solo spazi);
-/// 2. **riempie i timestamp mancanti**: l'allineatore CTC non aggancia numeri
-///    e simboli, che non hanno una grafia nel vocabolario dei caratteri. Il
-///    tempo si ricava interpolando fra i vicini noti — la fine della parola
-///    valida precedente e l'inizio della successiva — e quando le parole senza
-///    tempo sono piu' d'una di fila l'intervallo viene spartito equamente fra
-///    loro. Agli estremi le ancore sono 0 e la durata dell'audio;
-/// 3. **impone la monotonia**: nessuna parola inizia prima che finisca la
-///    precedente;
-/// 4. **impone la durata minima** `durata_minima` per ogni parola;
-/// 5. **tronca alla durata dell'audio**: nessun timestamp la oltrepassa.
-///
-/// I due ultimi vincoli possono entrare in conflitto in coda al file (non
-/// resta spazio per la durata minima): li' vince il troncamento, perche' un
-/// sottotitolo che punta oltre la fine del media e' un errore visibile mentre
-/// una battuta corta non lo e'.
-///
-/// Passare `durata_audio <= 0` disattiva il solo troncamento (utile quando la
-/// durata non e' nota); il resto della normalizzazione viene comunque applicato.
-pub fn ripulisci(words: Vec<Word>, durata_audio: f64, durata_minima: f64) -> Vec<Word> {
-    let iniziali = words.len();
-
-    // 1. parole vuote: non hanno nulla da mostrare e falserebbero le ancore
-    //    temporali delle vicine.
-    let mut words: Vec<Word> = words
-        .into_iter()
-        .filter_map(|mut w| {
-            let testo = w.text.trim();
-            if testo.is_empty() {
-                return None;
-            }
-            if testo.len() != w.text.len() {
-                w.text = testo.to_string();
-            }
-            Some(w)
-        })
-        .collect();
-
-    let scartate = iniziali - words.len();
-    if words.is_empty() {
-        if scartate > 0 {
-            warn!(scartate, "tutte le parole erano vuote");
-        }
-        return words;
-    }
-
-    // 2. timestamp mancanti. Si lavora nell'ordine di produzione, che e' gia'
-    //    quello del parlato: ordinare adesso, con i NaN in mezzo, li
-    //    ammasserebbe in fondo e distruggerebbe il contesto dei vicini.
-    let interpolate = riempi_tempi_mancanti(&mut words, durata_audio);
-
-    // 3. ora tutti i tempi sono finiti e l'ordinamento e' ben definito.
-    //    `sort_by` e' stabile: a parita' di inizio l'ordine del parlato resta.
-    words.sort_by(|a, b| a.start.total_cmp(&b.start));
-
-    // 4+5. monotonia, durata minima, troncamento.
-    let limite = if durata_audio > 0.0 { durata_audio } else { f64::INFINITY };
-    let durata_minima = durata_minima.max(0.0);
-    let mut corrette = 0usize;
-    let mut fine_precedente = 0.0f64;
-
-    for w in words.iter_mut() {
-        let (start0, end0) = (w.start, w.end);
-
-        w.start = w.start.clamp(0.0, limite).max(fine_precedente);
-        w.end = w.end.max(w.start + durata_minima);
-
-        if w.end > limite {
-            // In coda al file il troncamento ha la precedenza sulla durata
-            // minima: la parola puo' restare piu' corta, mai sforare.
-            w.end = limite;
-            w.start = w.start.min(w.end);
-        }
-
-        if (w.start - start0).abs() > 1e-9 || (w.end - end0).abs() > 1e-9 {
-            corrette += 1;
-        }
-        fine_precedente = w.end;
-    }
-
-    if scartate > 0 || interpolate > 0 || corrette > 0 {
-        debug!(
-            scartate,
-            interpolate,
-            corrette,
-            parole = words.len(),
-            "sequenza di parole normalizzata"
-        );
-    }
-    if interpolate > 0 {
-        info!(
-            parole = interpolate,
-            "timestamp stimati per interpolazione (numeri o simboli non agganciabili dall'allineatore)"
-        );
-    }
-
-    words
-}
-
-/// Una parola ha un tempo utilizzabile solo se entrambi gli estremi sono
-/// finiti: NaN e infiniti valgono "tempo mancante".
-fn ha_tempo(w: &Word) -> bool {
-    w.start.is_finite() && w.end.is_finite()
-}
-
-/// Assegna un tempo alle parole che non ne hanno, spartendo equamente
-/// l'intervallo fra i due vicini con tempo noto. Ritorna quante ne ha corrette.
-fn riempi_tempi_mancanti(words: &mut [Word], durata_audio: f64) -> usize {
-    let n = words.len();
-    let fine_file = if durata_audio > 0.0 {
-        durata_audio
-    } else {
-        // Senza durata nota, l'ancora destra e' la fine dell'ultimo tempo noto.
-        words.iter().filter(|w| ha_tempo(w)).map(|w| w.end).fold(0.0, f64::max)
-    };
-
-    let mut totale = 0usize;
-    let mut i = 0usize;
-
-    while i < n {
-        if ha_tempo(&words[i]) {
-            i += 1;
-            continue;
-        }
-
-        // Estensione del gruppo di parole consecutive senza tempo.
-        let mut j = i;
-        while j < n && !ha_tempo(&words[j]) {
-            j += 1;
-        }
-
-        // Ancore: la fine del vicino sinistro (gia' risolto dai giri
-        // precedenti) e l'inizio del vicino destro.
-        let sinistra = if i > 0 { words[i - 1].end } else { 0.0 };
-        let destra = if j < n { words[j].start } else { fine_file };
-        let destra = destra.max(sinistra);
-
-        let quante = j - i;
-        let passo = (destra - sinistra) / quante as f64;
-
-        for (k, w) in words[i..j].iter_mut().enumerate() {
-            w.start = sinistra + k as f64 * passo;
-            w.end = sinistra + (k + 1) as f64 * passo;
-            // Il tempo e' stimato, non misurato: la confidenza lo dichiara.
-            w.score = 0.0;
-        }
-
-        totale += quante;
-        i = j;
-    }
-
-    totale
-}
 
 #[cfg(test)]
 mod tests {
@@ -674,134 +502,6 @@ mod tests {
     fn frame_insufficienti_falliscono() {
         let (logits, frames) = logits_from(&[1], 3, 1);
         assert!(viterbi_ctc(&logits, frames, 3, &[1, 1, 1, 1], 0).is_err());
-    }
-
-    fn parola(text: &str, start: f64, end: f64) -> Word {
-        Word { text: text.into(), start, end, score: 1.0, segment: 0 }
-    }
-
-    /// Parola senza timestamp, come la produce l'allineatore su numeri e simboli.
-    fn senza_tempo(text: &str) -> Word {
-        Word { text: text.into(), start: f64::NAN, end: f64::NAN, score: 0.0, segment: 0 }
-    }
-
-    #[test]
-    fn ripulisci_scarta_le_parole_vuote() {
-        let w = vec![parola("ciao", 0.0, 0.5), parola("   ", 0.5, 0.6), parola("", 0.6, 0.7)];
-        let out = ripulisci(w, 10.0, DURATA_MINIMA_PAROLA);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].text, "ciao");
-    }
-
-    #[test]
-    fn ripulisci_interpola_una_parola_isolata() {
-        let w = vec![parola("il", 1.0, 2.0), senza_tempo("42"), parola("euro", 3.0, 4.0)];
-        let out = ripulisci(w, 10.0, DURATA_MINIMA_PAROLA);
-        assert_eq!(out[1].text, "42");
-        assert!((out[1].start - 2.0).abs() < 1e-9, "{:?}", out[1]);
-        assert!((out[1].end - 3.0).abs() < 1e-9, "{:?}", out[1]);
-        // il tempo e' stimato: la confidenza lo dichiara
-        assert_eq!(out[1].score, 0.0);
-    }
-
-    #[test]
-    fn ripulisci_spartisce_equamente_piu_parole_consecutive() {
-        let w = vec![
-            parola("sono", 0.0, 1.0),
-            senza_tempo("3"),
-            senza_tempo("+"),
-            senza_tempo("4"),
-            parola("totale", 4.0, 5.0),
-        ];
-        let out = ripulisci(w, 10.0, DURATA_MINIMA_PAROLA);
-        for (i, atteso) in [1.0, 2.0, 3.0].into_iter().enumerate() {
-            assert!(
-                (out[i + 1].start - atteso).abs() < 1e-9,
-                "parola {i}: {:?}",
-                out[i + 1]
-            );
-        }
-        assert!((out[3].end - 4.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn ripulisci_ancora_agli_estremi_del_file() {
-        let w = vec![senza_tempo("1"), parola("euro", 2.0, 3.0), senza_tempo("2")];
-        let out = ripulisci(w, 5.0, DURATA_MINIMA_PAROLA);
-        // in testa l'ancora sinistra e' 0
-        assert!((out[0].start - 0.0).abs() < 1e-9);
-        assert!((out[0].end - 2.0).abs() < 1e-9);
-        // in coda l'ancora destra e' la durata dell'audio
-        assert!((out[2].start - 3.0).abs() < 1e-9);
-        assert!((out[2].end - 5.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn ripulisci_gestisce_tutte_le_parole_senza_tempo() {
-        let w = vec![senza_tempo("uno"), senza_tempo("due"), senza_tempo("tre")];
-        let out = ripulisci(w, 3.0, DURATA_MINIMA_PAROLA);
-        assert!(out.iter().all(|w| w.start.is_finite() && w.end.is_finite()));
-        assert!((out[0].start - 0.0).abs() < 1e-9);
-        assert!((out[1].start - 1.0).abs() < 1e-9);
-        assert!((out[2].end - 3.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn ripulisci_impone_la_monotonia() {
-        let w = vec![parola("a", 0.0, 1.0), parola("b", 0.5, 1.5), parola("c", 0.2, 2.0)];
-        let out = ripulisci(w, 10.0, DURATA_MINIMA_PAROLA);
-        for pair in out.windows(2) {
-            assert!(pair[1].start >= pair[0].end, "{pair:?}");
-        }
-    }
-
-    #[test]
-    fn ripulisci_impone_la_durata_minima() {
-        let w = vec![parola("a", 1.0, 1.0), parola("b", 2.0, 2.001)];
-        let out = ripulisci(w, 10.0, DURATA_MINIMA_PAROLA);
-        assert!(out.iter().all(|w| w.end - w.start >= DURATA_MINIMA_PAROLA - 1e-9), "{out:?}");
-    }
-
-    #[test]
-    fn ripulisci_tronca_alla_durata_dellaudio() {
-        let w = vec![parola("a", 4.0, 12.0), parola("b", 20.0, 30.0)];
-        let out = ripulisci(w, 5.0, DURATA_MINIMA_PAROLA);
-        assert!(out.iter().all(|w| w.end <= 5.0 + 1e-9), "{out:?}");
-        assert!(out.iter().all(|w| w.start <= w.end), "{out:?}");
-    }
-
-    #[test]
-    fn ripulisci_lascia_invariata_una_sequenza_gia_pulita() {
-        let w = vec![parola("uno", 0.0, 0.5), parola("due", 0.6, 1.2), parola("tre", 1.2, 2.0)];
-        let out = ripulisci(w.clone(), 10.0, DURATA_MINIMA_PAROLA);
-        assert_eq!(out.len(), w.len());
-        for (a, b) in out.iter().zip(w.iter()) {
-            assert_eq!(a.text, b.text);
-            assert!((a.start - b.start).abs() < 1e-9 && (a.end - b.end).abs() < 1e-9, "{a:?}");
-        }
-    }
-
-    #[test]
-    fn ripulisci_e_idempotente() {
-        let w = vec![
-            parola("a", 0.0, 1.0),
-            senza_tempo("7"),
-            parola("b", 0.5, 0.5),
-            parola("", 9.0, 9.0),
-        ];
-        let una = ripulisci(w, 4.0, DURATA_MINIMA_PAROLA);
-        let due = ripulisci(una.clone(), 4.0, DURATA_MINIMA_PAROLA);
-        assert_eq!(una.len(), due.len());
-        for (a, b) in una.iter().zip(due.iter()) {
-            assert!((a.start - b.start).abs() < 1e-9 && (a.end - b.end).abs() < 1e-9, "{a:?} {b:?}");
-        }
-    }
-
-    #[test]
-    fn ripulisci_senza_durata_nota_non_tronca() {
-        let w = vec![parola("a", 0.0, 1.0), parola("b", 100.0, 200.0)];
-        let out = ripulisci(w, 0.0, DURATA_MINIMA_PAROLA);
-        assert!((out[1].end - 200.0).abs() < 1e-9, "{out:?}");
     }
 
     #[test]

@@ -548,7 +548,7 @@ fn dilata(copertura: &[u8], w: usize, h: usize, raggio: f32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::align::Word;
+    use crate::trascrizione::Parola;
     use crate::layout::{impagina, Formato};
 
     const FONT: &[u8] = include_bytes!("../assets/Inter-Bold.ttf");
@@ -561,16 +561,10 @@ mod tests {
     /// Prepara il rasterizzatore sul primo blocco del testo dato.
     fn scena(testo: &str, cfg: &LayoutConfig, stile: Stile) -> (Rasterizzatore, Tela, Vec<Blocco>) {
         let mut t = Tipografo::nuovo(FONT, cfg.corpo(), cfg.interlinea).unwrap();
-        let parole: Vec<Word> = testo
+        let parole: Vec<Parola> = testo
             .split(' ')
             .enumerate()
-            .map(|(i, p)| Word {
-                text: p.into(),
-                start: i as f64 * 0.4,
-                end: i as f64 * 0.4 + 0.35,
-                score: 1.0,
-                segment: 0,
-            })
+            .map(|(i, p)| Parola::nuova(p, i as f64 * 0.4, i as f64 * 0.4 + 0.35))
             .collect();
         let blocchi = impagina(&parole, &mut t, cfg).unwrap();
         let mut r = Rasterizzatore::nuovo(t, cfg.clone(), stile);

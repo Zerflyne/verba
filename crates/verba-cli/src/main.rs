@@ -35,6 +35,7 @@ use verba_core::render::{Colore, Rasterizzatore, Stile};
 use verba_core::segmentation::{SegmentationConfig, Segmenter};
 use verba_core::srt::{SrtConfig, SrtMode};
 use verba_core::transcribe::{Transcriber, WhisperConfig};
+use verba_core::trascrizione::Trascrizione;
 use verba_core::video::{self, VideoConfig};
 use verba_core::{align, audio, gpu, layout, segmentation, srt, FONT_INTER_BOLD};
 
@@ -304,8 +305,8 @@ enum NormalizeArg {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum SrtModeArg {
     Blocchi,
-    Word,
-    Line,
+    Parola,
+    Riga,
     Karaoke,
 }
 
@@ -444,9 +445,9 @@ fn main() -> Result<()> {
     // ---------------------------------------------------------------- fase 3
     // Allineamento forzato CTC con wav2vec2-italian: ora la GPU e' libera.
     // Il risultato resta in RAM: non passa da alcun file intermedio.
-    let words = if transcripts.is_empty() {
+    let trascrizione = if transcripts.is_empty() {
         warn!("Whisper non ha prodotto testo: il video sara' interamente trasparente");
-        Vec::new()
+        Trascrizione::vuota(pcm.duration_secs())
     } else {
         let mut aligner = align::Aligner::new(
             &cli.align_model,
@@ -456,10 +457,11 @@ fn main() -> Result<()> {
             threads,
         )
         .context("inizializzazione dell'allineatore wav2vec2")?;
-        let w = aligner.run(&pcm, &transcripts)?;
+        let t = aligner.run(&pcm, &transcripts)?;
         drop(aligner);
-        w
+        t
     };
+    let parole = trascrizione.parole();
 
     // ---------------------------------------------------------------- fase 4
     // Impaginazione: le parole diventano righe — una alla volta a schermo —
@@ -470,10 +472,10 @@ fn main() -> Result<()> {
     };
     let mut tipografo = Tipografo::nuovo(&font, layout_cfg.corpo(), layout_cfg.interlinea)
         .context("caricamento del font")?;
-    let blocchi = layout::impagina(&words, &mut tipografo, &layout_cfg)?;
+    let blocchi = layout::impagina(parole, &mut tipografo, &layout_cfg)?;
     info!(
         righe = blocchi.len(),
-        parole = words.len(),
+        parole = parole.len(),
         corpo = layout_cfg.corpo(),
         larghezza_utile = layout_cfg.larghezza_utile(),
         "impaginazione completata"
@@ -514,14 +516,14 @@ fn main() -> Result<()> {
             altro => {
                 let srt_cfg = SrtConfig {
                     mode: match altro {
-                        SrtModeArg::Word => SrtMode::Word,
+                        SrtModeArg::Parola => SrtMode::Parola,
                         SrtModeArg::Karaoke => SrtMode::Karaoke,
-                        _ => SrtMode::Line,
+                        _ => SrtMode::Riga,
                     },
                     max_chars: cli.srt_max_chars,
                     ..Default::default()
                 };
-                srt::build_cues(&words, &srt_cfg)
+                srt::build_cues(parole, &srt_cfg)
             }
         };
         std::fs::write(srt_path, srt::render(&cues))
@@ -529,9 +531,9 @@ fn main() -> Result<()> {
         info!(file = %srt_path.display(), battute = cues.len(), "SRT scritto");
     }
     if let Some(json_path) = &cli.json {
-        std::fs::write(json_path, srt::render_json(&words)?)
+        std::fs::write(json_path, srt::render_json(parole)?)
             .with_context(|| format!("scrittura di {}", json_path.display()))?;
-        info!(file = %json_path.display(), parole = words.len(), "mappatura JSON scritta");
+        info!(file = %json_path.display(), parole = parole.len(), "mappatura JSON scritta");
     }
 
     gpu::log_vram(&device, "finale");

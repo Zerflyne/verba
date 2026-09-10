@@ -160,23 +160,17 @@ fn calcola_stati(blocchi: &[Blocco], totale: u64, vcfg: &VideoConfig) -> Vec<Sta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::align::Word;
+    use crate::trascrizione::Parola;
     use crate::layout::{impagina, Attivazione, Formato, Tipografo};
 
     const FONT: &[u8] = include_bytes!("../assets/Inter-Bold.ttf");
 
     fn blocchi_di_prova(cfg: &LayoutConfig) -> Vec<Blocco> {
         let mut t = Tipografo::nuovo(FONT, cfg.corpo(), cfg.interlinea).unwrap();
-        let parole: Vec<Word> = "una prova di sottotitoli"
+        let parole: Vec<Parola> = "una prova di sottotitoli"
             .split(' ')
             .enumerate()
-            .map(|(i, p)| Word {
-                text: p.into(),
-                start: 1.0 + i as f64 * 0.5,
-                end: 1.0 + i as f64 * 0.5 + 0.45,
-                score: 1.0,
-                segment: 0,
-            })
+            .map(|(i, p)| Parola::nuova(p, 1.0 + i as f64 * 0.5, 1.0 + i as f64 * 0.5 + 0.45))
             .collect();
         impagina(&parole, &mut t, cfg).unwrap()
     }
@@ -217,8 +211,8 @@ mod tests {
         };
         let mut t = Tipografo::nuovo(FONT, cfg.corpo(), cfg.interlinea).unwrap();
         let parole = vec![
-            Word { text: "alfa".into(), start: 0.0, end: 0.4, score: 1.0, segment: 0 },
-            Word { text: "beta".into(), start: 2.0, end: 2.4, score: 1.0, segment: 0 },
+            Parola::nuova("alfa", 0.0, 0.4),
+            Parola::nuova("beta", 2.0, 2.4),
         ];
         let blocchi = impagina(&parole, &mut t, &cfg).unwrap();
         let vcfg = VideoConfig { durata: 3.0, ..Default::default() };

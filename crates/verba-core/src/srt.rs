@@ -3,7 +3,7 @@
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::align::Word;
+use crate::trascrizione::Parola;
 use crate::layout::Blocco;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,10 +12,10 @@ pub enum SrtMode {
     /// compare a schermo e quando. E' la modalita' coerente con il video.
     Blocchi,
     /// Una battuta per parola: e' la mappatura testuale parola-per-parola.
-    Word,
+    Parola,
     /// Parole raggruppate in righe leggibili (sottotitolo classico).
-    Line,
-    /// Come `Line`, ma con una battuta per parola in cui la parola corrente e'
+    Riga,
+    /// Come `Riga`, ma con una battuta per parola in cui la parola corrente e'
     /// evidenziata all'interno della riga (effetto karaoke).
     Karaoke,
 }
@@ -35,7 +35,7 @@ pub struct SrtConfig {
 
 impl Default for SrtConfig {
     fn default() -> Self {
-        Self { mode: SrtMode::Word, max_chars: 84, max_duration: 6.0, max_gap: 0.6, min_duration: 0.30 }
+        Self { mode: SrtMode::Parola, max_chars: 84, max_duration: 6.0, max_gap: 0.6, min_duration: 0.30 }
     }
 }
 
@@ -53,7 +53,7 @@ pub struct Cue {
 /// sequenza ordinata, senza buchi e monotona. L'allungamento a `min_duration`
 /// puo' pero' far sconfinare una battuta in quella successiva, per cui la
 /// monotonia viene ristabilita alla fine da [`evita_sovrapposizioni`].
-pub fn build_cues(words: &[Word], cfg: &SrtConfig) -> Vec<Cue> {
+pub fn build_cues(words: &[Parola], cfg: &SrtConfig) -> Vec<Cue> {
     let mut cues = build_cues_grezze(words, cfg);
     evita_sovrapposizioni(&mut cues);
     cues
@@ -74,28 +74,28 @@ fn evita_sovrapposizioni(cues: &mut [Cue]) {
     }
 }
 
-fn build_cues_grezze(words: &[Word], cfg: &SrtConfig) -> Vec<Cue> {
+fn build_cues_grezze(words: &[Parola], cfg: &SrtConfig) -> Vec<Cue> {
     match cfg.mode {
-        SrtMode::Word => words
+        SrtMode::Parola => words
             .iter()
             .enumerate()
             .map(|(i, w)| Cue {
                 index: i + 1,
-                start: w.start,
-                end: w.end.max(w.start + cfg.min_duration),
-                text: w.text.clone(),
+                start: w.inizio,
+                end: w.fine.max(w.inizio + cfg.min_duration),
+                text: w.testo.clone(),
             })
             .collect(),
         // `Blocchi` passa di norma da `cues_da_blocchi`; se arriva qui si hanno
         // solo le parole, e la resa piu' vicina e' il raggruppamento in righe.
-        SrtMode::Line | SrtMode::Blocchi => group(words, cfg)
+        SrtMode::Riga | SrtMode::Blocchi => group(words, cfg)
             .into_iter()
             .enumerate()
             .map(|(i, g)| Cue {
                 index: i + 1,
-                start: g[0].start,
-                end: g.last().unwrap().end.max(g[0].start + cfg.min_duration),
-                text: g.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" "),
+                start: g[0].inizio,
+                end: g.last().unwrap().fine.max(g[0].inizio + cfg.min_duration),
+                text: g.iter().map(|w| w.testo.as_str()).collect::<Vec<_>>().join(" "),
             })
             .collect(),
         SrtMode::Karaoke => {
@@ -108,17 +108,17 @@ fn build_cues_grezze(words: &[Word], cfg: &SrtConfig) -> Vec<Cue> {
                         .enumerate()
                         .map(|(j, x)| {
                             if j == i {
-                                format!("<u>{}</u>", x.text)
+                                format!("<u>{}</u>", x.testo)
                             } else {
-                                x.text.clone()
+                                x.testo.clone()
                             }
                         })
                         .collect::<Vec<_>>()
                         .join(" ");
                     cues.push(Cue {
                         index,
-                        start: w.start,
-                        end: w.end.max(w.start + 0.04),
+                        start: w.inizio,
+                        end: w.fine.max(w.inizio + 0.04),
                         text: line,
                     });
                     index += 1;
@@ -131,33 +131,33 @@ fn build_cues_grezze(words: &[Word], cfg: &SrtConfig) -> Vec<Cue> {
 
 /// Raggruppa le parole in righe rispettando lunghezza, durata, pause e
 /// punteggiatura di fine frase.
-fn group<'a>(words: &'a [Word], cfg: &SrtConfig) -> Vec<Vec<&'a Word>> {
-    let mut out: Vec<Vec<&Word>> = Vec::new();
-    let mut cur: Vec<&Word> = Vec::new();
+fn group<'a>(words: &'a [Parola], cfg: &SrtConfig) -> Vec<Vec<&'a Parola>> {
+    let mut out: Vec<Vec<&Parola>> = Vec::new();
+    let mut cur: Vec<&Parola> = Vec::new();
     let mut chars = 0usize;
 
     for (i, w) in words.iter().enumerate() {
-        let gap = if i == 0 { 0.0 } else { w.start - words[i - 1].end };
-        let dur = if cur.is_empty() { 0.0 } else { w.end - cur[0].start };
-        let would_be = chars + w.text.chars().count() + usize::from(!cur.is_empty());
+        let gap = if i == 0 { 0.0 } else { w.inizio - words[i - 1].fine };
+        let dur = if cur.is_empty() { 0.0 } else { w.fine - cur[0].inizio };
+        let would_be = chars + w.testo.chars().count() + usize::from(!cur.is_empty());
 
         let deve_chiudere = !cur.is_empty()
             && (would_be > cfg.max_chars
                 || dur > cfg.max_duration
                 || gap > cfg.max_gap
                 // cambio di segmento: mai unire due frasi separate da pyannote
-                || w.segment != cur[cur.len() - 1].segment);
+                || w.segmento != cur[cur.len() - 1].segmento);
 
         if deve_chiudere {
             out.push(std::mem::take(&mut cur));
             chars = 0;
         }
 
-        chars += w.text.chars().count() + usize::from(!cur.is_empty());
+        chars += w.testo.chars().count() + usize::from(!cur.is_empty());
         cur.push(w);
 
         // fine frase: chiudi subito, e' il punto di taglio piu' naturale
-        if w.text.ends_with(['.', '!', '?', '…']) {
+        if w.testo.ends_with(['.', '!', '?', '…']) {
             out.push(std::mem::take(&mut cur));
             chars = 0;
         }
@@ -204,7 +204,7 @@ pub fn timestamp(secs: f64) -> String {
 }
 
 /// Esporta la mappatura parola-per-parola in JSON (utile per editor esterni).
-pub fn render_json(words: &[Word]) -> Result<String> {
+pub fn render_json(words: &[Parola]) -> Result<String> {
     Ok(serde_json::to_string_pretty(&serde_json::json!({
         "words": words,
         "count": words.len(),
@@ -215,8 +215,8 @@ pub fn render_json(words: &[Word]) -> Result<String> {
 mod tests {
     use super::*;
 
-    fn w(text: &str, start: f64, end: f64, segment: usize) -> Word {
-        Word { text: text.into(), start, end, score: 1.0, segment }
+    fn w(testo: &str, inizio: f64, fine: f64, segmento: usize) -> Parola {
+        Parola { segmento, ..Parola::nuova(testo, inizio, fine) }
     }
 
     #[test]
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn la_pausa_lunga_spezza_la_riga() {
         let words = vec![w("uno", 0.0, 0.3, 0), w("due", 2.0, 2.3, 0)];
-        let cfg = SrtConfig { mode: SrtMode::Line, ..Default::default() };
+        let cfg = SrtConfig { mode: SrtMode::Riga, ..Default::default() };
         let cues = build_cues(&words, &cfg);
         assert_eq!(cues.len(), 2);
     }
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn il_punto_fermo_chiude_la_battuta() {
         let words = vec![w("Ciao.", 0.0, 0.3, 0), w("Come", 0.35, 0.6, 0)];
-        let cfg = SrtConfig { mode: SrtMode::Line, ..Default::default() };
+        let cfg = SrtConfig { mode: SrtMode::Riga, ..Default::default() };
         let cues = build_cues(&words, &cfg);
         assert_eq!(cues.len(), 2);
         assert_eq!(cues[0].text, "Ciao.");
@@ -256,10 +256,10 @@ mod tests {
     #[test]
     fn nessuna_battuta_si_sovrappone_alla_successiva() {
         // parole fitte: la durata minima di 0,30 s le farebbe accavallare
-        let words: Vec<Word> = (0..10)
+        let words: Vec<Parola> = (0..10)
             .map(|i| w("parola", i as f64 * 0.12, i as f64 * 0.12 + 0.08, 0))
             .collect();
-        for mode in [SrtMode::Word, SrtMode::Line, SrtMode::Karaoke] {
+        for mode in [SrtMode::Parola, SrtMode::Riga, SrtMode::Karaoke] {
             let cfg = SrtConfig { mode, ..Default::default() };
             let cues = build_cues(&words, &cfg);
             for pair in cues.windows(2) {
