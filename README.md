@@ -95,8 +95,8 @@ every shared library it needs, so the version of FFmpeg on your system does not
 matter:
 
 ```bash
-chmod +x Verba_0.1.0_amd64.AppImage
-./Verba_0.1.0_amd64.AppImage
+chmod +x Verba_0.1.1_amd64.AppImage
+./Verba_0.1.1_amd64.AppImage
 ```
 
 **The `.deb` is built against the FFmpeg of Ubuntu 24.04** (`libavcodec60`,
@@ -106,7 +106,7 @@ derivatives — Mint 22, Pop!_OS 24 — and the wrong one everywhere else, becau
 a distribution with a different FFmpeg has different library version numbers:
 
 ```bash
-sudo apt install ./verba_0.1.0_amd64.deb
+sudo apt install ./verba_0.1.1_amd64.deb
 ```
 
 Use `apt install ./file.deb` rather than `dpkg -i`: apt resolves the

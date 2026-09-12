@@ -390,8 +390,8 @@ I pacchetti sono allegati alle
 Ubuntu, `.AppImage` per le altre distribuzioni, un installer `.exe` per Windows.
 
 ```bash
-sudo dpkg -i verba_0.1.0_amd64.deb          # Debian, Ubuntu
-chmod +x Verba_0.1.0_amd64.AppImage         # altre distribuzioni
+sudo dpkg -i verba_0.1.1_amd64.deb          # Debian, Ubuntu
+chmod +x Verba_0.1.1_amd64.AppImage         # altre distribuzioni
 ```
 
 **Su Windows l'installer non e' firmato**, e SmartScreen mostra *«Windows ha
