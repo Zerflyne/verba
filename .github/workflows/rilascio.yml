@@ -74,6 +74,14 @@ jobs:
           # invece vengono inoltrati come CMAKE_C_FLAGS e CMAKE_CXX_FLAGS.
           echo "CFLAGS=-mmacosx-version-min=11.0" >> "$GITHUB_ENV"
           echo "CXXFLAGS=-mmacosx-version-min=11.0" >> "$GITHUB_ENV"
+          # I flag da soli non bastano: CMake aggiunge il proprio
+          # `-mmacosx-version-min` dopo i CMAKE_CXX_FLAGS, e vince l'ultimo.
+          # `cmake-rs` non permette di passare define, ma legge
+          # CMAKE_TOOLCHAIN_FILE dall'ambiente — e un file di toolchain viene
+          # letto prima di qualsiasi CMakeLists.
+          echo 'set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "" FORCE)' \
+            > "$RUNNER_TEMP/minimo.cmake"
+          echo "CMAKE_TOOLCHAIN_FILE=$RUNNER_TEMP/minimo.cmake" >> "$GITHUB_ENV"
           brew install ffmpeg pkg-config
           # `ffmpeg` di Homebrew installa anche gli header e i .pc: al
           # `build.rs` basta che pkg-config sappia dove guardare.
@@ -165,6 +173,21 @@ jobs:
             testo=$(printf '%s\n' "$estratto" \
               | cut -c1-400 | sed 's/%/%25/g' | tr -d '\r' | awk '{printf "%s%%0A", $0}')
             echo "::error title=tauri build (${{ matrix.nome }})::$testo"
+            # Il riepilogo del job e' pubblico come le annotazioni, ma non ha
+            # limiti di lunghezza ne' problemi di caratteri da proteggere:
+            # quando l'annotazione non basta, l'errore si legge qui.
+            {
+              echo "## ${{ matrix.nome }} — tauri build non riuscito"
+              echo
+              echo '### Righe che parlano di errore'
+              echo '```'
+              printf '%s\n' "$estratto"
+              echo '```'
+              echo '### Ultime 120 righe'
+              echo '```'
+              tail -n 120 /tmp/tauri.log | cut -c1-300
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
