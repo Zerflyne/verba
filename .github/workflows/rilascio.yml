@@ -24,6 +24,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
   ORT_VERSIONE: "1.22.0"
+  # whisper.cpp usa `std::filesystem::directory_iterator`, disponibile dal
+  # 10.15. Senza questa riga il target predefinito e' piu' vecchio e il
+  # compilatore rifiuta l'intestazione. 11.0 e' comunque il minimo su
+  # Apple silicon, dove il pacchetto viene costruito.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
   pacchetti:

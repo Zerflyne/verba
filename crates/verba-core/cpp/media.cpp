@@ -21,7 +21,18 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/version.h>
 }
+
+// La durata di un fotogramma si chiama `duration` dalla 6.0 di FFmpeg; prima
+// era `pkt_duration`, che la 7.0 ha rimosso. Ubuntu 22.04 si ferma alla 4.4,
+// quindi chi compila li' — e il runner che costruisce il pacchetto `.deb` —
+// vede solo il nome vecchio, e chi ha una FFmpeg recente solo il nuovo.
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 30, 100)
+#  define VERBA_DURATA_FOTOGRAMMA(f) ((f)->duration)
+#else
+#  define VERBA_DURATA_FOTOGRAMMA(f) ((f)->pkt_duration)
+#endif
 
 namespace {
 
@@ -387,8 +398,9 @@ int verba_media_fotogramma(VerbaMedia *m, double t, uint8_t *rgba, int passo,
 
             // Il fotogramma successivo comincia dopo `t`: questo e' quello
             // visibile.
-            const double durata = m->frame->duration > 0
-                ? m->frame->duration * av_q2d(st->time_base)
+            const int64_t durata_tick = VERBA_DURATA_FOTOGRAMMA(m->frame);
+            const double durata = durata_tick > 0
+                ? durata_tick * av_q2d(st->time_base)
                 : 0.0;
             if (istante + durata > t) {
                 return 0;
