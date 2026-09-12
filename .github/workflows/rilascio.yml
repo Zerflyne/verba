@@ -88,6 +88,12 @@ jobs:
 
       - run: npm ci --prefix ui
 
+      # L'interfaccia si compila qui, con un passo suo. `tauri build` la
+      # ricompilerebbe comunque dal suo hook, ma un fallimento dentro l'hook
+      # arriva come «tauri ... exit code 1» e non dice altro: i log di Actions
+      # non si leggono senza account, il nome del passo si'.
+      - run: npm run build --prefix ui
+
       - name: ONNX Runtime (Linux)
         if: matrix.nome == 'linux'
         run: |
