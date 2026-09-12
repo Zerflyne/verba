@@ -11,6 +11,7 @@
 #include "media.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>

@@ -123,14 +123,14 @@ Run the installer and follow it through.
 
 ### macOS (.dmg)
 
-> [!CAUTION]
-> **The macOS package is experimental and may be missing from a given
-> release.** It is built without anyone being able to test it on real
-> hardware, so if the `.dmg` is not attached below the Linux and Windows
-> packages, that build did not survive. Building [from
-> source](#build-from-source) works; packaging is what is unproven.
-
 Open the disk image and drag Verba into Applications.
+
+> [!NOTE]
+> **The macOS package is built but has never been run.** There is no Apple
+> machine behind this project: CI produces the `.dmg`, nothing more. It is the
+> one platform where a report of what actually happens would be genuinely
+> useful — [open an issue](https://github.com/Zerflyne/verba/issues) either
+> way.
 
 > [!WARNING]
 > **The app is not notarized**, so Gatekeeper will refuse it on the first

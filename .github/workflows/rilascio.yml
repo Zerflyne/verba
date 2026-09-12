@@ -48,10 +48,6 @@ jobs:
 
     name: ${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
-    # macOS non blocca gli altri due. Il pacchetto e' voluto, ma da qui non
-    # si puo' provare, e tenere in ostaggio `.deb`, `.AppImage` e `.exe` in
-    # attesa che indovini un sistema che non ho sarebbe un cattivo scambio.
-    continue-on-error: ${{ matrix.nome == 'macos' }}
 
     steps:
       - uses: actions/checkout@v5
