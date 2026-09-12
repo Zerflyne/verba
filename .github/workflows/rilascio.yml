@@ -155,8 +155,15 @@ jobs:
           if ! tauri build --bundles ${{ matrix.bundle }} 2>&1 | tee /tmp/tauri.log; then
             versione=$(grep -o -m3 'mmacosx-version-min=[0-9.]*' /tmp/tauri.log | sort -u | tr '\n' ' ')
             echo "::notice::minimo macOS in linea: ${versione:-nessuno}"
-            testo=$(tail -n 60 /tmp/tauri.log \
-              | sed 's/%/%25/g' | tr -d '\r' | awk '{printf "%s%%0A", $0}')
+            # La coda secca non basta: su Windows le ultime righe sono il dump
+            # del PATH, e l'errore vero sta molto piu' su. Si tengono le righe
+            # che parlano di errore, e la coda solo come riserva.
+            estratto=$(grep -a -E -i 'error|errore|fatal|panick|cannot |no such |not found|LINK :|LNK[0-9]' /tmp/tauri.log \
+              | grep -a -v -E 'rerun-if-env-changed|_ERROR=|CC_ENABLE|NO_DEFAULTS' \
+              | tail -n 35)
+            [ -z "$estratto" ] && estratto=$(tail -n 25 /tmp/tauri.log)
+            testo=$(printf '%s\n' "$estratto" \
+              | cut -c1-400 | sed 's/%/%25/g' | tr -d '\r' | awk '{printf "%s%%0A", $0}')
             echo "::error title=tauri build (${{ matrix.nome }})::$testo"
             exit 1
           fi
