@@ -20,7 +20,7 @@ jobs:
     name: Motore e riga di comando
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Librerie di sistema
         run: |
@@ -33,19 +33,23 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # `--exclude verba-app` non e' pignoleria: `--workspace` ignora i
+      # `default-members` e si tira dietro anche il guscio Tauri, che qui non
+      # compila perche' GTK e WebKit non ci sono. L'esclusione dev'essere
+      # scritta, altrimenti il comando contraddice il commento in cima al file.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude verba-app
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude verba-app --all-targets -- -D warnings
 
   interfaccia:
     name: Interfaccia
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm

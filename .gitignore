@@ -14,3 +14,10 @@
 /crates/verba-app/lib/*.so*
 /crates/verba-app/lib/*.dll
 /crates/verba-app/lib/*.dylib
+
+# Le uscite delle prove a mano: restano fuori come i file di partenza.
+/prova*.mov
+/prova*.webm
+/prova*.mkv
+/prova*.srt
+/prova*.vtt
