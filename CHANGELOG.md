@@ -78,6 +78,17 @@ per chi usa Verba, non per chi ne legge i commit.
 - La durata minima di una parola passa da 40 a 80 ms.
 
 ### Corretto
+- **Il pacchetto `.deb` si installava e poi non partiva**, senza dire niente:
+  `dpkg` non segnalava nulla perche' il pacchetto non dichiarava le librerie di
+  FFmpeg fra le sue dipendenze, e il programma moriva all'avvio su
+  `libavcodec.so.58: cannot open shared object file`. Ora le dichiara, cosi'
+  `apt` rifiuta l'installazione dove non possono essere soddisfatte invece di
+  lasciare un'icona che non fa nulla. Il pacchetto e' costruito sulla 24.04,
+  i cui numeri di versione sono quelli delle distribuzioni in uso adesso.
+- `libonnxruntime` non veniva trovata dentro un `.deb`: le risorse finiscono in
+  `/usr/lib/Verba/lib`, e la ricerca si fermava un livello sopra. Era un
+  secondo difetto, nascosto dietro il primo — il programma non arrivava mai
+  abbastanza avanti per accorgersene.
 - **Il comando per esportare l'allineatore era sbagliato in tutti i posti dove
   era scritto**, compreso il messaggio che il programma mostra quando quel file
   manca: `--w2v` e' un prefisso che argparse risolve in `--w2v-model` e

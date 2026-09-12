@@ -88,21 +88,32 @@ source](#build-from-source).
 > the executable and never will — Whisper large-v3 alone is 2.9 GB. See [First
 > run](#first-run-the-models).
 
-### Linux (.deb)
+### Linux (.deb or AppImage)
 
-For Debian and Ubuntu:
-
-```bash
-sudo dpkg -i verba_0.1.0_amd64.deb
-sudo apt-get install -f        # only if dpkg reports missing dependencies
-```
-
-For every other distribution, the AppImage needs no installation at all:
+**The AppImage is the one that works anywhere.** It carries its own copy of
+every shared library it needs, so the version of FFmpeg on your system does not
+matter:
 
 ```bash
 chmod +x Verba_0.1.0_amd64.AppImage
 ./Verba_0.1.0_amd64.AppImage
 ```
+
+**The `.deb` is built against the FFmpeg of Ubuntu 24.04** (`libavcodec60`,
+`libavformat60`, `libavutil58`) and uses your system's copy rather than
+shipping its own. That makes it the right package on Ubuntu 24.04 and its
+derivatives — Mint 22, Pop!_OS 24 — and the wrong one everywhere else, because
+a distribution with a different FFmpeg has different library version numbers:
+
+```bash
+sudo apt install ./verba_0.1.0_amd64.deb
+```
+
+Use `apt install ./file.deb` rather than `dpkg -i`: apt resolves the
+dependencies and, more to the point, **refuses the install when they cannot be
+met** instead of leaving you with a program that does not start. If you get a
+complaint about `libavcodec60` or `libavutil58`, that is your answer — take the
+AppImage.
 
 Both packages carry their own copy of ONNX Runtime, so there is nothing else to
 fetch. The command-line binary `verba` ships in the same release if you want it

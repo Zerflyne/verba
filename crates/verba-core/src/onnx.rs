@@ -136,10 +136,15 @@ fn cartelle_di_ricerca() -> Vec<PathBuf> {
             // Un `.deb` mette il binario in `/usr/bin` e le risorse in
             // `/usr/lib/<nome del prodotto>`; un `.AppImage` monta la stessa
             // struttura sotto `$APPDIR/usr`.
+            // `resources: ["lib/*"]` conserva il prefisso, quindi il file
+            // finisce in `<prodotto>/lib/`: va guardato anche quello, non
+            // solo la radice della cartella delle risorse.
             cartelle.push(su.join("lib"));
-            cartelle.push(su.join("lib").join("verba"));
-            cartelle.push(su.join("lib").join("Verba"));
-            cartelle.push(su.join("lib").join("verba-app"));
+            for prodotto in ["verba", "Verba", "verba-app"] {
+                let base = su.join("lib").join(prodotto);
+                cartelle.push(base.join("lib"));
+                cartelle.push(base);
+            }
         }
     }
     cartelle.push(cartelle::librerie());
