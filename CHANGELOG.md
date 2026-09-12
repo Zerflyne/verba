@@ -97,11 +97,30 @@ per chi usa Verba, non per chi ne legge i commit.
   l'installazione e i tempi parola per parola.
 - Il `vocab.json` dell'allineatore ora ha un'impronta SHA-256 dichiarata. Era
   l'unico file del catalogo scaricato senza verifica.
-- **L'audio dell'anteprima non si sentiva.** La traccia arrivava alla webview
-  come indirizzo `asset://`, e WebKitGTK rifiuta gli schemi personalizzati per
-  i contenuti multimediali: l'elemento falliva con «formato o indirizzo non
-  supportati» prima ancora di leggere un byte. Ora il WAV viaggia sull'IPC e
-  diventa un `blob:`, che WebKit accetta. Sparisce anche il file temporaneo.
+- **L'audio dell'anteprima non si sentiva, e la causa non era quella che
+  sembrava.** Il primo sospetto era lo schema: la traccia arrivava come
+  indirizzo `asset://`, e WebKitGTK rifiuta gli schemi personalizzati per i
+  media. Passando i byte come `blob:` in sviluppo funzionava — e nel pacchetto
+  no, con lo stesso «formato o indirizzo non supportati» di prima.
+  Il vero difetto stava due strati piu' sotto, ed era **uno solo per tutta
+  l'applicazione**: la CSP dichiarava `default-src 'self'` senza concedere
+  niente a `connect-src`, e la `fetch` con cui Tauri parla col motore punta a
+  `ipc://localhost`. Bloccata. Tauri allora ripiega in silenzio su
+  `postMessage`, dove una risposta di byte grezzi viene serializzata come
+  **array JSON di numeri**. Il WAV non era piu' un WAV: `new Blob([array])`
+  scrive quei numeri come testo, e 288 kB di audio diventavano un documento di
+  1 MB che GStreamer, con pieno diritto, chiamava «file di testo».
+  Era invisibile perche' si manifestava in un posto solo. `new
+  Uint8ClampedArray(array)` accetta un array di numeri, quindi i fotogrammi
+  comparivano come sempre: nessuno poteva sospettare che ogni risposta binaria
+  stesse viaggiando per la via lenta, tre volte piu' grande del necessario.
+  In sviluppo non si vedeva perche' la pagina la serve Vite, senza CSP: la
+  `fetch` passava e i byte arrivavano interi.
+  Ora la CSP concede `connect-src 'self' ipc: http://ipc.localhost`, e i byte
+  di ogni risposta binaria passano da un punto solo che li accetta in
+  entrambe le forme — se un domani l'IPC dovesse ripiegare di nuovo, si perde
+  velocita' e non la riproduzione, e il registro lo dice invece di tacere.
+  Sparisce anche il file temporaneo su disco.
 - **Il fotogramma d'anteprima usciva dalla sua scatola.** Un `max-height: 100%`
   su un elemento di griglia con riga automatica si misura su un'altezza
   indefinita, cioe' non vincola niente: un video 1920×1080 traboccava da un

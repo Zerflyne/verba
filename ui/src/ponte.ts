@@ -35,6 +35,51 @@ async function chiama<T>(comando: string, argomenti?: Record<string, unknown>): 
   return invoke<T>(comando, argomenti);
 }
 
+/** L'IPC sta consegnando i byte per la via lenta. Detto una volta sola:
+ *  `fotogramma` passa da qui sessanta volte al secondo. */
+let ripiegoDetto = false;
+
+/** I byte di una risposta binaria, qualunque forma abbiano preso per strada.
+ *
+ *  Un comando che restituisce `Response` manda byte grezzi, e attraverso il
+ *  protocollo `ipc:` arrivano come `ArrayBuffer`. Ma se la CSP non concede
+ *  `connect-src ipc:`, la `fetch` verso l'IPC viene bloccata e Tauri ripiega
+ *  **in silenzio** su `postMessage`: la' un corpo grezzo lo serializza serde,
+ *  e diventa un array JSON di numeri. Non sono piu' byte.
+ *
+ *  E' esattamente quello che accadeva nel pacchetto, e per settimane non si e'
+ *  visto: `new Uint8ClampedArray(array)` accetta un array di numeri e i
+ *  fotogrammi comparivano come sempre, mentre `new Blob([array])` quei numeri
+ *  li *scrive* — un WAV di 288 kB diventava un documento di 1 MB, e GStreamer
+ *  lo chiamava «file di testo» con pieno diritto. Un solo difetto, visibile in
+ *  un posto e mascherato nell'altro.
+ *
+ *  La CSP ora concede l'IPC. Questo serve perche', se un domani non lo
+ *  concedesse piu', si perda velocita' e non la riproduzione. */
+function byteGrezzi(risposta: unknown): Uint8Array<ArrayBuffer> {
+  if (risposta instanceof ArrayBuffer) return new Uint8Array(risposta);
+  if (ArrayBuffer.isView(risposta)) {
+    // `isView` restringe a `ArrayBufferLike`, che comprende anche
+    // `SharedArrayBuffer`: dall'IPC non ne arriva nessuno.
+    const v = risposta as ArrayBufferView<ArrayBuffer>;
+    return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  }
+  if (Array.isArray(risposta)) {
+    if (!ripiegoDetto) {
+      ripiegoDetto = true;
+      riporta(
+        "l'IPC sta usando il ripiego postMessage: i byte arrivano come array " +
+          "di numeri invece che grezzi, e ogni risposta binaria costa tre " +
+          "volte tanto. Controllare `connect-src ipc:` nella CSP.",
+      );
+    }
+    return Uint8Array.from(risposta as number[]);
+  }
+  throw new Error(
+    `risposta binaria di forma inattesa (${typeof risposta}): non sono byte`,
+  );
+}
+
 /** Si mette in ascolto dell'avanzamento delle fasi. */
 export async function ascolta(f: (e: Evento) => void): Promise<() => void> {
   if (finto) {
@@ -152,12 +197,16 @@ export const dimensioni = () => chiama<[number, number] | null>("dimensioni");
  *  media, e l'elemento fallisce con `MEDIA_ERR_SRC_NOT_SUPPORTED` senza
  *  nemmeno provare a leggerlo.
  *
+ *  I byte passano da [`byteGrezzi`], e non e' una precauzione teorica: e'
+ *  proprio qui che un array di numeri spacciato per byte rendeva muta
+ *  l'anteprima in ogni pacchetto costruito finora.
+ *
  *  Chi lo chiama deve revocare l'indirizzo precedente: il blob resta in
  *  memoria finche' qualcuno lo tiene per mano. */
 export async function sorgenteAudio(): Promise<string | null> {
   if (finto) return null;
   const { invoke } = await import("@tauri-apps/api/core");
-  const byte = await invoke<ArrayBuffer>("traccia_audio");
+  const byte = byteGrezzi(await invoke<unknown>("traccia_audio"));
   return URL.createObjectURL(new Blob([byte], { type: "audio/wav" }));
 }
 
@@ -191,15 +240,15 @@ export async function fotogramma(t: number, larghezza: number, altezza: number):
   // Ogni passo dice il proprio nome: un \"NotSupportedError\" nudo non fa
   // capire se ha ceduto il trasferimento dei byte o la loro conversione in
   // immagine, e sono due difetti che si riparano in due posti diversi.
-  let byte: ArrayBuffer;
+  let byte: Uint8Array<ArrayBuffer>;
   try {
-    byte = await invoke<ArrayBuffer>("fotogramma", { t });
+    byte = byteGrezzi(await invoke<unknown>("fotogramma", { t }));
   } catch (e) {
     riporta(`fotogramma(${t}): il motore non ha restituito i pixel`, e);
     throw e;
   }
 
-  const dati = new Uint8ClampedArray(byte);
+  const dati = new Uint8ClampedArray(byte.buffer, byte.byteOffset, byte.byteLength);
   const attesi = larghezza * altezza * 4;
   if (dati.length !== attesi) {
     const messaggio =

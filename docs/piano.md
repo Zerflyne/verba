@@ -44,7 +44,7 @@ cosa no, uno per uno.
 | Audio trattato come video | **si'** | `verba overlay prova.mp3` produce `alpha_mode=1` in WebM e `yuva444p12le` in ProRes 4444; la finestra Esporta li offre di nuovo |
 | Anteprima su nero per i file audio | **si'** | `prova.mp3` aperto nella finestra vera: fotogramma nero, sottotitolo sopra, contorno chiaro attorno alla tela per non confonderla con lo sfondo |
 | Whisper e allineatore insieme sopra il 20% | **si'** | Trascrizione vera di `prova.mp3` sulla Tesla P40: «restano caricati insieme: 22901 MiB liberi, ne servivano 7200», e lo scarico avviene dopo l'allineamento |
-| Riproduzione dell'audio | **si', per quel che si puo' vedere** | Il `<audio>` accetta il blob, `play()` non viene rifiutata, l'elemento fa da orologio e i fotogrammi scorrono con lui. Il suono in se' da qui non si sente: quello resta da confermare a orecchio |
+| Riproduzione dell'audio | **la causa e' misurata, il pacchetto e' da riprovare** | Il difetto non era nell'audio: la CSP bloccava la `fetch` verso `ipc://localhost`, Tauri ripiegava su `postMessage` e i byte grezzi arrivavano come array di numeri. Ogni anello e' stato misurato con `scripts/banco_webview.py` su questa macchina, compreso l'errore identico a quello visto. Resta da sentire il suono da un pacchetto costruito con la CSP nuova |
 | Editor dei termini noti | **a meta'** | Il pannello si apre, si scrive, si conta; il salvataggio passa dal comando Tauri, che non e' mai stato chiamato per davvero |
 | Modelli mancanti in evidenza | **a meta'** | La scheda d'avviso si vede con `?modelli=mancanti` nel banco; nella finestra vera i modelli ci sono e la scheda non compare |
 
@@ -53,6 +53,15 @@ nessuna rilettura aveva visto, tutti nell'anteprima: l'audio che non partiva,
 la tela senza misura, i fotogrammi fermi durante la riproduzione e la colonna
 di Modifica che spingeva il trasporto sotto il bordo. Sono descritti nel
 diario, alla voce *Corretto*.
+
+Sull'audio ci sono voluti tre tentativi, e i primi due hanno curato il sintomo
+perche' nessuno aveva **misurato** niente: si vedeva «formato non supportato» e
+si concludeva che il formato o l'indirizzo fossero sbagliati. Erano giusti. Il
+numero che ha risolto la questione e' stato la lunghezza del blob, 1.010.572
+byte per un WAV che ne conta 288.044: tre volte e mezzo, cioe' byte scritti
+come numeri decimali. Da li' la catena e' venuta da se'. La morale non e'
+sull'audio: **un messaggio d'errore dice cosa si e' rotto, non dove**, e finche'
+una verifica gira soltanto in sviluppo non e' una verifica del pacchetto.
 
 ## Fasi
 
