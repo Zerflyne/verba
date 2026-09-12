@@ -33,10 +33,13 @@ jobs:
         include:
           - sistema: ubuntu-22.04
             nome: linux
+            bundle: deb,appimage
           - sistema: windows-latest
             nome: windows
+            bundle: nsis
           - sistema: macos-latest
             nome: macos
+            bundle: dmg
 
     name: ${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
@@ -124,18 +127,23 @@ jobs:
           New-Item -ItemType Directory -Force crates/verba-app/lib | Out-Null
           Copy-Item "ort/onnxruntime-win-x64-$V/lib/onnxruntime.dll" crates/verba-app/lib/
 
+      # `tauri-action` fa la stessa cosa, ma quando fallisce dice soltanto
+      # «tauri [...] exit code 1»: l'errore vero resta nei log, e i log di
+      # Actions non si leggono senza un account. Qui la CLI viene invocata
+      # direttamente e, se cade, le ultime righe finiscono in
+      # un'annotazione — che invece e' pubblica.
       - name: Pacchetti
-        uses: tauri-apps/tauri-action@v0
-        with:
-          projectPath: crates/verba-app
-          args: >-
-            ${{ matrix.nome == 'linux'  && '--bundles deb,appimage'
-             || matrix.nome == 'macos'  && '--bundles dmg'
-             ||                            '--bundles nsis' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_APP_PATH: crates/verba-app
-          TAURI_FRONTEND_PATH: ui
+        shell: bash
+        working-directory: crates/verba-app
+        run: |
+          npm install -g @tauri-apps/cli@^2
+          set -o pipefail
+          if ! tauri build --bundles ${{ matrix.bundle }} 2>&1 | tee /tmp/tauri.log; then
+            testo=$(tail -n 60 /tmp/tauri.log \
+              | sed 's/%/%25/g' | tr -d '\r' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=tauri build (${{ matrix.nome }})::$testo"
+            exit 1
+          fi
 
       - name: Riga di comando
         run: cargo build --release -p verba-cli
