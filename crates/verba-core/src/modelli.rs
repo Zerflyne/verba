@@ -227,7 +227,7 @@ pub const CATALOGO: [Modello; 5] = [
         byte: 410,
         provenienza: Provenienza::Scaricabile {
             url: "https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-italian/resolve/main/vocab.json",
-            sha256: "",
+            sha256: "deee9194b91e4e4f628ff37da6226a9c9cfe564810c917ae545920458723c58e",
         },
         spiegazione: "Da qui il programma deduce blank CTC, delimitatore di parola e maiuscole.",
     },
@@ -241,7 +241,7 @@ pub const ALLINEATORE: Modello = Modello {
     ruolo: Ruolo::Allineamento,
     byte: 1_262_346_310,
     provenienza: Provenienza::DaEsportare {
-        comando: "python scripts/export_models.py --w2v",
+        comando: "python scripts/export_models.py --wav2vec2",
     },
     spiegazione: "Da' il tempo esatto di ogni parola. Va esportato: non esiste una \
                   versione ONNX pubblica di cui fidarsi.",

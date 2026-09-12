@@ -177,7 +177,7 @@ command. If you are working inside the repository and the models are in
 >
 > ```bash
 > pip install "torch>=2.2" onnx transformers huggingface_hub
-> python scripts/export_models.py --w2v
+> python scripts/export_models.py --wav2vec2
 > mv wav2vec2-italian.onnx wav2vec2-italian.vocab.json ~/.local/share/verba/models/
 > ```
 >

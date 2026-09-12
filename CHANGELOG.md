@@ -78,6 +78,14 @@ per chi usa Verba, non per chi ne legge i commit.
 - La durata minima di una parola passa da 40 a 80 ms.
 
 ### Corretto
+- **Il comando per esportare l'allineatore era sbagliato in tutti i posti dove
+  era scritto**, compreso il messaggio che il programma mostra quando quel file
+  manca: `--w2v` e' un prefisso che argparse risolve in `--w2v-model` e
+  fallisce con «expected one argument». Il flag e' `--wav2vec2`. Chi ha provato
+  a seguire l'istruzione non ha ottenuto niente, ed e' il passaggio che sta fra
+  l'installazione e i tempi parola per parola.
+- Il `vocab.json` dell'allineatore ora ha un'impronta SHA-256 dichiarata. Era
+  l'unico file del catalogo scaricato senza verifica.
 - **L'audio dell'anteprima non si sentiva.** La traccia arrivava alla webview
   come indirizzo `asset://`, e WebKitGTK rifiuta gli schemi personalizzati per
   i contenuti multimediali: l'elemento falliva con «formato o indirizzo non
