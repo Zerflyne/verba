@@ -3,6 +3,7 @@
 #   .deb        Debian e Ubuntu
 #   .AppImage   le altre distribuzioni
 #   .exe        installer per Windows
+#   .dmg        macOS (Apple silicon)
 #
 # ONNX Runtime non e' impacchettabile dentro l'eseguibile e non si puo' dare
 # per scontata sulla macchina di chi installa: viene scaricata qui e messa in
@@ -34,6 +35,8 @@ jobs:
             nome: linux
           - sistema: windows-latest
             nome: windows
+          - sistema: macos-latest
+            nome: macos
 
     name: ${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
@@ -50,6 +53,14 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev \
             libdbus-1-dev patchelf
+
+      - name: FFmpeg (macOS)
+        if: matrix.nome == 'macos'
+        run: |
+          brew install ffmpeg pkg-config
+          # `ffmpeg` di Homebrew installa anche gli header e i .pc: al
+          # `build.rs` basta che pkg-config sappia dove guardare.
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: FFmpeg (Windows)
         if: matrix.nome == 'windows'
@@ -87,6 +98,16 @@ jobs:
           mkdir -p crates/verba-app/lib
           cp onnxruntime-linux-x64-$V/lib/libonnxruntime.so* crates/verba-app/lib/
 
+      - name: ONNX Runtime (macOS)
+        if: matrix.nome == 'macos'
+        run: |
+          V="$ORT_VERSIONE"
+          curl -L -o ort.tgz \
+            "https://github.com/microsoft/onnxruntime/releases/download/v$V/onnxruntime-osx-arm64-$V.tgz"
+          tar xf ort.tgz
+          mkdir -p crates/verba-app/lib
+          cp onnxruntime-osx-arm64-$V/lib/libonnxruntime*.dylib crates/verba-app/lib/
+
       - name: ONNX Runtime (Windows)
         if: matrix.nome == 'windows'
         shell: pwsh
@@ -101,7 +122,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: crates/verba-app
-          args: ${{ matrix.nome == 'linux' && '--bundles deb,appimage' || '--bundles nsis' }}
+          args: >-
+            ${{ matrix.nome == 'linux'  && '--bundles deb,appimage'
+             || matrix.nome == 'macos'  && '--bundles dmg'
+             ||                            '--bundles nsis' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_APP_PATH: crates/verba-app
@@ -117,6 +141,7 @@ jobs:
             target/release/bundle/deb/*.deb
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/nsis/*.exe
+            target/release/bundle/dmg/*.dmg
             target/release/verba
             target/release/verba.exe
           if-no-files-found: warn
@@ -144,5 +169,6 @@ jobs:
             **Il primo avvio scarica quasi 3 GB di modelli.** Non stanno dentro
             l'eseguibile e non ci possono stare.
 
-            L'installer di Windows non e' firmato: SmartScreen mostra un
-            avviso. Il README spiega come procedere.
+            L'installer di Windows non e' firmato e l'app di macOS non e'
+            notarizzata: SmartScreen e Gatekeeper mostrano un avviso. Il
+            README spiega come procedere in entrambi i casi.
