@@ -123,6 +123,13 @@ Run the installer and follow it through.
 
 ### macOS (.dmg)
 
+> [!CAUTION]
+> **The macOS package is experimental and may be missing from a given
+> release.** It is built without anyone being able to test it on real
+> hardware, so if the `.dmg` is not attached below the Linux and Windows
+> packages, that build did not survive. Building [from
+> source](#build-from-source) works; packaging is what is unproven.
+
 Open the disk image and drag Verba into Applications.
 
 > [!WARNING]

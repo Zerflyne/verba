@@ -48,6 +48,10 @@ jobs:
 
     name: ${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
+    # macOS non blocca gli altri due. Il pacchetto e' voluto, ma da qui non
+    # si puo' provare, e tenere in ostaggio `.deb`, `.AppImage` e `.exe` in
+    # attesa che indovini un sistema che non ho sarebbe un cattivo scambio.
+    continue-on-error: ${{ matrix.nome == 'macos' }}
 
     steps:
       - uses: actions/checkout@v5
@@ -65,6 +69,11 @@ jobs:
       - name: FFmpeg (macOS)
         if: matrix.nome == 'macos'
         run: |
+          # `cmake-rs` non imposta CMAKE_OSX_DEPLOYMENT_TARGET, quindi
+          # MACOSX_DEPLOYMENT_TARGET da solo non arriva fino a clang. I flag
+          # invece vengono inoltrati come CMAKE_C_FLAGS e CMAKE_CXX_FLAGS.
+          echo "CFLAGS=-mmacosx-version-min=11.0" >> "$GITHUB_ENV"
+          echo "CXXFLAGS=-mmacosx-version-min=11.0" >> "$GITHUB_ENV"
           brew install ffmpeg pkg-config
           # `ffmpeg` di Homebrew installa anche gli header e i .pc: al
           # `build.rs` basta che pkg-config sappia dove guardare.
@@ -144,6 +153,8 @@ jobs:
           npm install -g @tauri-apps/cli@^2
           set -o pipefail
           if ! tauri build --bundles ${{ matrix.bundle }} 2>&1 | tee /tmp/tauri.log; then
+            versione=$(grep -o -m3 'mmacosx-version-min=[0-9.]*' /tmp/tauri.log | sort -u | tr '\n' ' ')
+            echo "::notice::minimo macOS in linea: ${versione:-nessuno}"
             testo=$(tail -n 60 /tmp/tauri.log \
               | sed 's/%/%25/g' | tr -d '\r' | awk '{printf "%s%%0A", $0}')
             echo "::error title=tauri build (${{ matrix.nome }})::$testo"
