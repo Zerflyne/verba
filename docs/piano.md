@@ -172,4 +172,4 @@ Il percorso da provare e' quello della spec: trascinare un file, aspettare le
 fasi, guardare l'anteprima, cambiare qualcosa in Modifica, esportare.
 
 Per i workflow basta il primo push: `verifica.yml` parte su qualsiasi commit,
-`rilascio.yml` su un tag `v0.1.1`.
+`rilascio.yml` su un tag `v0.1.2`.

@@ -95,8 +95,8 @@ every shared library it needs, so the version of FFmpeg on your system does not
 matter:
 
 ```bash
-chmod +x Verba_0.1.1_amd64.AppImage
-./Verba_0.1.1_amd64.AppImage
+chmod +x Verba_0.1.2_amd64.AppImage
+./Verba_0.1.2_amd64.AppImage
 ```
 
 **The `.deb` is built against the FFmpeg of Ubuntu 24.04** (`libavcodec60`,
@@ -106,7 +106,7 @@ derivatives — Mint 22, Pop!_OS 24 — and the wrong one everywhere else, becau
 a distribution with a different FFmpeg has different library version numbers:
 
 ```bash
-sudo apt install ./verba_0.1.1_amd64.deb
+sudo apt install ./verba_0.1.2_amd64.deb
 ```
 
 Use `apt install ./file.deb` rather than `dpkg -i`: apt resolves the
@@ -116,20 +116,23 @@ complaint about `libavcodec60` or `libavutil58`, that is your answer — take th
 AppImage.
 
 Both packages carry their own copy of ONNX Runtime, so there is nothing else to
-fetch. The command-line binary `verba` ships in the same release if you want it
-on your `PATH`.
+fetch. The command-line binary `verba` ships in the same release for Linux and
+macOS if you want it on your `PATH`; on Windows it does not, because on its own
+it would not start — the FFmpeg DLLs it needs live inside the installer.
 
 ### Windows (.exe)
 
 Run the installer and follow it through.
 
-> [!WARNING]
-> **The installer is not code-signed**, so SmartScreen will say *"Windows
-> protected your PC"*. A signing certificate costs several hundred euros a year
-> and is not justifiable for a project at this stage. To continue: click **More
-> info**, then **Run anyway**.
->
-> If no warning appears and the file simply vanishes, Defender quarantined it —
+The installer carries FFmpeg and ONNX Runtime with it: nothing else to install.
+
+> [!NOTE]
+> **The installer is not code-signed.** A signing certificate costs several
+> hundred euros a year and is not justifiable for a project at this stage.
+> SmartScreen *may* therefore say *"Windows protected your PC"* — it decides on
+> reputation, so the same file can pass silently on one machine and be stopped
+> on another. If it is stopped: click **More info**, then **Run anyway**. If no
+> warning appears and the file simply vanishes, Defender quarantined it —
 > restore it from **Protection history**.
 
 ### macOS (.dmg)
@@ -485,6 +488,9 @@ for every CSS change, and to see the window on a machine that has no WebKit.
 - **The app window is a fixed 1600×980**, by choice.
 - The Windows installer is **not signed** and the macOS app is **not
   notarized** — see [Install](#install) for how to get past the warnings.
+- **The macOS package has never been started by anyone**, and it does not bundle
+  FFmpeg: on a machine without it, it will not open. Linux and Windows do carry
+  what they need.
 
 ## How it works
 
@@ -556,6 +562,13 @@ English is perfectly fine and will not be turned away for it.
 ## License
 
 [MIT](LICENSE).
+
+**The Windows installer bundles FFmpeg** — the *shared* build from
+[gyan.dev](https://github.com/GyanD/codexffmpeg), which is GPL-3. MIT is
+compatible with the GPL, so Verba's own source stays MIT; the Windows package
+as a whole is distributed under the terms of the GPL, and the source of that
+FFmpeg build is at the link above. The Linux packages bundle nothing of FFmpeg:
+they use the distribution's copy.
 
 The bundled fonts keep their own licenses, collected in
 [`assets/fonts/licenze`](assets/fonts/licenze). The models are downloaded at

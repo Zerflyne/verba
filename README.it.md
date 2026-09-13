@@ -390,16 +390,24 @@ I pacchetti sono allegati alle
 Ubuntu, `.AppImage` per le altre distribuzioni, un installer `.exe` per Windows.
 
 ```bash
-sudo dpkg -i verba_0.1.1_amd64.deb          # Debian, Ubuntu
-chmod +x Verba_0.1.1_amd64.AppImage         # altre distribuzioni
+sudo dpkg -i verba_0.1.2_amd64.deb          # Debian, Ubuntu
+chmod +x Verba_0.1.2_amd64.AppImage         # altre distribuzioni
 ```
 
-**Su Windows l'installer non e' firmato**, e SmartScreen mostra *«Windows ha
-protetto il PC»*. Un certificato di firma costa qualche centinaio di euro
-l'anno e non ha senso per un progetto a questo punto. Per procedere: clic su
-**Ulteriori informazioni**, poi su **Esegui comunque**. Se l'avviso non compare
-del tutto e il file sparisce, e' Defender che l'ha messo in quarantena: va
-ripristinato dalla cronologia delle protezioni.
+**Su Windows l'installer non e' firmato.** Un certificato di firma costa
+qualche centinaio di euro l'anno e non ha senso per un progetto a questo punto.
+SmartScreen *puo'* quindi dire *«Windows ha protetto il PC»*: decide sulla
+reputazione del file, quindi lo stesso installer passa in silenzio su una
+macchina e viene fermato su un'altra. Se viene fermato: clic su **Ulteriori
+informazioni**, poi su **Esegui comunque**. Se l'avviso non compare del tutto e
+il file sparisce, e' Defender che l'ha messo in quarantena: va ripristinato
+dalla cronologia delle protezioni.
+
+L'installer di Windows si porta dietro **FFmpeg** (la build *shared* di
+[gyan.dev](https://github.com/GyanD/codexffmpeg), GPL-3) e ONNX Runtime: non
+c'e' altro da installare. Verba resta MIT — che con la GPL e' compatibile — ma
+quel pacchetto nel suo insieme si distribuisce alle condizioni della GPL, e i
+sorgenti di quella build stanno al collegamento qui sopra.
 
 Chi preferisce compilare trova tutto nella sezione seguente.
 
@@ -1052,11 +1060,24 @@ Due cose che vengono impacchettate e due che non lo sono:
   release ufficiale di Microsoft (1.22.x, l'unica che `ort 2.0.0-rc.10`
   accetta) e la mette in `crates/verba-app/lib`, che `tauri.conf.json` dichiara
   come risorsa. Chi installa non deve sapere che esiste.
+* **Su Windows viaggia anche FFmpeg**, e non in `lib/` ma accanto
+  all'eseguibile: e' legato in modo implicito, quindi lo risolve il caricatore
+  di Windows prima che il programma parta, e il caricatore guarda la cartella
+  del `.exe`. Ci pensa `tauri.windows.conf.json`. Su Linux invece non viaggia
+  niente: il `.deb` dichiara `libavcodec60` e compagne fra le dipendenze e usa
+  quelle del sistema. **Su macOS non viaggia e non e' dichiarato**: e' un
+  difetto noto, e nessuno ha ancora provato quel pacchetto.
+* Dopo la costruzione, **l'installer di Windows viene aperto e ispezionato**: se
+  dentro non ci sono le librerie attese, il lavoro cade li'. Una release che si
+  installa e non parte l'abbiamo gia' pubblicata una volta, e il modo per non
+  rifarlo non e' ricordarsene.
 * **I modelli no.** Sono quasi tre gigabyte: li scarica l'applicazione al primo
   avvio, con la barra di avanzamento e la ripresa se il collegamento cade.
 * **L'allineatore neanche**, e va esportato a mano: vedi sopra.
 * La riga di comando viene compilata nello stesso giro e allegata come
-  eseguibile a se'.
+  eseguibile a se' — su Linux e macOS. Su Windows si compila (MSVC ha gia'
+  rifiutato codice che gcc e clang accettavano) ma non si allega: da sola non
+  partirebbe, perche' le DLL di FFmpeg stanno dentro l'installer.
 
 ## Come nascono i tempi delle parole
 

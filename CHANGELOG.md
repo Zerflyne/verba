@@ -76,6 +76,9 @@ per chi usa Verba, non per chi ne legge i commit.
 - La segmentazione usa l'esportazione ONNX pubblica di `onnx-community`, che non
   e' *gated*: al primo avvio non servono ne' account ne' token.
 - La durata minima di una parola passa da 40 a 80 ms.
+- L'avviso su SmartScreen dice ora che l'avviso *puo'* comparire, non che
+  compare: la decisione dipende dalla reputazione del file, e lo stesso
+  installer passa in silenzio su una macchina e viene fermato su un'altra.
 
 ### Corretto
 - **Il pacchetto `.deb` si installava e poi non partiva**, senza dire niente:
@@ -121,6 +124,21 @@ per chi usa Verba, non per chi ne legge i commit.
   entrambe le forme — se un domani l'IPC dovesse ripiegare di nuovo, si perde
   velocita' e non la riproduzione, e il registro lo dice invece di tacere.
   Sparisce anche il file temporaneo su disco.
+- **Il pacchetto Windows si installava e non partiva**, per la stessa ragione
+  del `.deb` di prima e con lo stesso silenzio: FFmpeg e' legato in modo
+  implicito, quindi lo risolve il caricatore di Windows prima che una riga di
+  Verba giri, e senza `avcodec-61.dll`, `avformat-61.dll` e `avutil-59.dll` il
+  processo muore prima di poter dire niente di proprio. Sul runner non si
+  vedeva perche' li' quelle DLL erano nel `PATH`: si era verificata la
+  compilazione, non il pacchetto. Ora viaggiano dentro l'installer e
+  **accanto all'eseguibile** — non in `lib/` come ONNX Runtime, che invece
+  viene caricata a programma avviato e quindi si puo' cercare. E dopo la
+  costruzione l'installer viene aperto e ispezionato: se dentro non ci sono, il
+  lavoro cade su una macchina che ha Windows, invece che a casa di chi installa.
+- Su Windows la riga di comando non viene piu' allegata alla release: da sola
+  non partirebbe, perche' le sue librerie stanno dentro l'installer. Si
+  continua a compilarla nello stesso giro, che e' il modo in cui si e' scoperto
+  piu' d'una volta che MSVC rifiuta codice accettato da gcc e clang.
 - **Il fotogramma d'anteprima usciva dalla sua scatola.** Un `max-height: 100%`
   su un elemento di griglia con riga automatica si misura su un'altezza
   indefinita, cioe' non vincola niente: un video 1920×1080 traboccava da un

@@ -21,3 +21,6 @@
 /prova*.mkv
 /prova*.srt
 /prova*.vtt
+
+# Le DLL di FFmpeg per Windows: le mette il workflow di rilascio.
+/crates/verba-app/ffmpeg/*.dll

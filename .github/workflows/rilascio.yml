@@ -97,6 +97,13 @@ jobs:
           echo "FFMPEG_INCLUDE_DIR=$dir\include" >> $env:GITHUB_ENV
           echo "FFMPEG_LIB_DIR=$dir\lib" >> $env:GITHUB_ENV
           echo "$dir\bin" >> $env:GITHUB_PATH
+          # Sul runner bastava il PATH, perche' il PATH lo si controlla. Su una
+          # macchina pulita no: FFmpeg e' legato in modo implicito, quindi a
+          # risolverlo e' il caricatore di Windows prima che il programma
+          # parta, e guarda la cartella del .exe. Le DLL devono viaggiare
+          # dentro il pacchetto, accanto all'eseguibile.
+          New-Item -ItemType Directory -Force crates/verba-app/ffmpeg | Out-Null
+          Copy-Item "$dir\bin\av*.dll","$dir\bin\sw*.dll","$dir\bin\postproc*.dll" crates/verba-app/ffmpeg/
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -187,6 +194,58 @@ jobs:
             exit 1
           fi
 
+      # Sperare che le librerie siano nel pacchetto e' esattamente cio' che ci
+      # ha gia' fatto pubblicare un installer che non si apriva. Qui il
+      # pacchetto prodotto viene aperto e ispezionato: se manca qualcosa, il
+      # lavoro cade su una macchina che ha la piattaforma giusta, non a casa di
+      # chi installa.
+      - name: Le librerie native sono dentro l'installer (Windows)
+        if: matrix.nome == 'windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem target/release/bundle/nsis/*.exe | Select-Object -First 1
+          if (-not $setup) { throw "nessun installer in target/release/bundle/nsis" }
+
+          # `-slt` stampa un `Path = ...` per file: si legge senza indovinare
+          # dove cadono le colonne.
+          $percorsi = @(& 7z l -slt $setup.FullName |
+            Where-Object { $_ -like 'Path = *' } |
+            ForEach-Object { ($_ -replace '^Path = ', '').Trim() })
+
+          # Se 7z non sa aprire il formato non si deve concludere che le
+          # librerie manchino: sarebbe la diagnosi sbagliata sul sintomo
+          # giusto.
+          if ($percorsi.Count -lt 2) {
+            throw "7z non ha elencato niente dentro $($setup.Name): la verifica non ha potuto girare."
+          }
+
+          $attese = @('avcodec-61.dll', 'avformat-61.dll', 'avutil-59.dll',
+                      'swresample-5.dll', 'onnxruntime.dll')
+          $nomi = $percorsi | ForEach-Object { Split-Path $_ -Leaf }
+          $mancanti = @($attese | Where-Object { $nomi -notcontains $_ })
+
+          # Il contenuto finisce sempre nel riepilogo: dove stanno le DLL
+          # decide se il programma si apre, e volerlo sapere solo quando si
+          # rompe qualcosa e' il motivo per cui si rompe.
+          $righe = @('## windows - dentro ' + $setup.Name, '', '```')
+          $righe += ($percorsi | Sort-Object)
+          $righe += '```'
+          if ($mancanti) {
+            $righe = @('## windows - librerie mancanti nell''installer', '',
+                       'Mancano: ' + ($mancanti -join ', '), '') + $righe[1..($righe.Count - 1)]
+          }
+          $righe | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+          if ($mancanti) {
+            echo "::error title=librerie mancanti nell'installer::$($mancanti -join ', ')"
+            exit 1
+          }
+          echo "Nell'installer ci sono tutte le librerie native."
+
+      # Su Windows la CLI si compila ma non si allega: da sola non
+      # partirebbe comunque, perche' le DLL di FFmpeg stanno dentro
+      # l'installer. Si continua a compilarla perche' MSVC ha gia'
+      # rifiutato codice che gcc e clang accettavano.
       - name: Riga di comando
         run: cargo build --release -p verba-cli
 
@@ -199,7 +258,6 @@ jobs:
             target/release/bundle/nsis/*.exe
             target/release/bundle/dmg/*.dmg
             target/release/verba
-            target/release/verba.exe
           if-no-files-found: warn
 
   release:
@@ -226,5 +284,13 @@ jobs:
             l'eseguibile e non ci possono stare.
 
             L'installer di Windows non e' firmato e l'app di macOS non e'
-            notarizzata: SmartScreen e Gatekeeper mostrano un avviso. Il
-            README spiega come procedere in entrambi i casi.
+            notarizzata: SmartScreen e Gatekeeper possono mostrare un avviso.
+            Il README spiega come procedere in entrambi i casi.
+
+            L'installer di Windows si porta dietro FFmpeg (build *shared* di
+            [gyan.dev](https://github.com/GyanD/codexffmpeg), GPL-3). Verba
+            resta MIT, compatibile con la GPL, ma quel pacchetto nel suo
+            insieme si distribuisce alle condizioni della GPL.
+
+            **Il pacchetto macOS non imbarca FFmpeg**: su una macchina che non
+            ce l'ha non si apre. Nessuno l'ha ancora provato.
